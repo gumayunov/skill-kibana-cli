@@ -1,0 +1,40 @@
+{
+  "hits": {
+    "total": {"value": 342, "relation": "gte"},
+    "hits": [
+      {
+        "_index": "logstash-2026.04.19",
+        "_id": "hit1",
+        "_source": {
+          "@timestamp": "2026-04-19T10:00:00.000Z",
+          "level": "info",
+          "event": "alpha",
+          "kubernetes_container_name": "api",
+          "kubernetes_namespace_name": "myapp"
+        }
+      },
+      {
+        "_index": "logstash-2026.04.19",
+        "_id": "hit2",
+        "_source": {
+          "@timestamp": "2026-04-19T10:00:01.000Z",
+          "level": "info",
+          "event": "beta",
+          "kubernetes_container_name": "api",
+          "kubernetes_namespace_name": "myapp"
+        }
+      },
+      {
+        "_index": "logstash-2026.04.19",
+        "_id": "hit3",
+        "_source": {
+          "@timestamp": "2026-04-19T10:00:02.000Z",
+          "level": "info",
+          "event": "gamma",
+          "kubernetes_container_name": "api",
+          "kubernetes_namespace_name": "myapp"
+        }
+      }
+    ]
+  }
+}

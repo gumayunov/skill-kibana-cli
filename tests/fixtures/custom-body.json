@@ -1,0 +1,16 @@
+{
+  "size": 3,
+  "query": {
+    "bool": {
+      "filter": [
+        {"range": {"@timestamp": {"gte": "now-5m"}}},
+        {"exists": {"field": "request_id"}}
+      ]
+    }
+  },
+  "aggs": {
+    "by_method": {
+      "terms": {"field": "method.keyword"}
+    }
+  }
+}

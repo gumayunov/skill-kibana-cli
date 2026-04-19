@@ -1,0 +1,59 @@
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "@timestamp": {
+              "gte": "2026-04-19T10:30:00Z",
+              "lte": "2026-04-19T11:00:00Z"
+            }
+          }
+        },
+        {
+          "term": {
+            "kubernetes_namespace_name.keyword": "myapp"
+          }
+        },
+        {
+          "term": {
+            "kubernetes_container_name.keyword": "api"
+          }
+        },
+        {
+          "range": {
+            "status": {
+              "gte": 500
+            }
+          }
+        },
+        {
+          "range": {
+            "duration_ms": {
+              "lte": 5000
+            }
+          }
+        }
+      ],
+      "must": [
+        {
+          "multi_match": {
+            "fields": [
+              "event",
+              "log",
+              "message"
+            ],
+            "query": "duplicate key",
+            "type": "phrase"
+          }
+        }
+      ]
+    }
+  },
+  "size": 50,
+  "sort": [
+    {
+      "@timestamp": "desc"
+    }
+  ]
+}

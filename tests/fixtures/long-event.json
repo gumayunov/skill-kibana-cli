@@ -1,0 +1,18 @@
+{
+  "hits": {
+    "total": {"value": 1, "relation": "eq"},
+    "hits": [
+      {
+        "_index": "logstash-2026.04.18",
+        "_id": "fixture-doc-1",
+        "_source": {
+          "@timestamp": "2026-04-18T20:23:43.641Z",
+          "level": "error",
+          "event": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "kubernetes_container_name": "worker",
+          "kubernetes_namespace_name": "myapp"
+        }
+      }
+    ]
+  }
+}

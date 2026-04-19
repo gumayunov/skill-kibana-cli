@@ -1,0 +1,1 @@
+[no hits for filters: --since 1h --namespace myapp]

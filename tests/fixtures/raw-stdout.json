@@ -1,0 +1,22 @@
+{
+  "hits": {
+    "total": {"value": 1, "relation": "eq"},
+    "hits": [
+      {
+        "_index": "logstash-2026.04.18",
+        "_id": "fixture-doc-1",
+        "_source": {
+          "@timestamp": "2026-04-18T20:23:43.641Z",
+          "time": "2026-04-18T20:23:43.641680606+00:00",
+          "stream": "stdout",
+          "_p": "F",
+          "log": "INFO:     10.0.0.5:48492 - \"GET /api/health HTTP/1.1\" 200 OK",
+          "kubernetes_pod_name": "myapp-api-abc1234567-xyz12",
+          "kubernetes_namespace_name": "myapp",
+          "kubernetes_container_name": "api",
+          "kubernetes_host": "kube-node-1"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+2026-04-19T10:00:00Z [info] api     alpha
+2026-04-19T10:00:01Z [info] api     beta
+2026-04-19T10:00:02Z [info] api     gamma
+[hits: 342, shown: 3 — use --limit N to see more]

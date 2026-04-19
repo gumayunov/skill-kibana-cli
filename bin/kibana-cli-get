@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "kibana-cli-get: bash >= 4 required (found $BASH_VERSION)" >&2
+  exit 1
+fi
+set -euo pipefail
+trap 'exit 0' PIPE
+
+CLI_NAME="kibana-cli-get"
+ENV_FILE="${KIBANACLI_ENV:-$HOME/.config/kibana-cli/env}"
+
+die() { echo "$CLI_NAME: $*" >&2; exit 1; }
+
+print_help() {
+cat <<'EOF'
+kibana-cli-get — fetch one ES document by <index>/<id>
+
+Usage:
+  kibana-cli-get <index>/<id> [-o short|full|json]
+
+Intended for resolving truncation markers like
+  … [truncated: 80/250 chars, id=logstash-2026.04.18/WtNDop0BwsaEdpuneK0M]
+
+Options:
+  -o short|full|json    output format (default: full)
+  --help                show this help
+
+Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+  KIBANACLI_HOST (required)
+  KIBANACLI_API_KEY (required)
+EOF
+}
+
+load_env() {
+  if [[ -n "${KIBANACLI_ENV:-}" && ! -r "$KIBANACLI_ENV" ]]; then
+    die "env file not readable: $KIBANACLI_ENV"
+  fi
+  [[ -r "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
+  [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
+  [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+}
+
+# Mirror of proxy_request in kibana-cli; keep synchronised.
+proxy_request() {
+  # args: method, es_path_with_query, [body_file]
+  local method=$1 es_path=$2 body=${3:-}
+  local url="${KIBANACLI_HOST%/}/api/console/proxy?path=$(printf %s "$es_path" | jq -sRr @uri)&method=$method"
+  local tmp http_code curl_rc
+  tmp=$(mktemp)
+  local -a args=(-sS -o "$tmp" -w '%{http_code}'
+    -H "Authorization: ApiKey $KIBANACLI_API_KEY"
+    -H 'kbn-xsrf: true' -H 'Content-Type: application/json')
+  curl_rc=0
+  if [[ -n "$body" ]]; then
+    http_code=$(curl "${args[@]}" -X POST "$url" --data @"$body" 2>/dev/null) || curl_rc=$?
+  else
+    http_code=$(curl "${args[@]}" -X POST "$url" 2>/dev/null) || curl_rc=$?
+  fi
+  if (( curl_rc != 0 )) || [[ -z "$http_code" ]]; then
+    http_code=000
+  fi
+  case "$http_code" in
+    2??) cat "$tmp"; rm -f "$tmp" ;;
+    401) rm -f "$tmp"; die "auth failed (401). Re-create API key per README." ;;
+    403) rm -f "$tmp"; die "access denied (403). Check API-key role_descriptors permissions." ;;
+    000) rm -f "$tmp"; die "network error: could not reach ${KIBANACLI_HOST%/}" ;;
+    *)
+      local snippet
+      snippet=$(head -c 200 "$tmp" 2>/dev/null || true)
+      rm -f "$tmp"
+      die "ES returned HTTP $http_code: $snippet"
+      ;;
+  esac
+}
+
+FMT="full"
+TARGET=""
+RESP_FROM_FILE=""
+while (($#)); do
+  case "$1" in
+    --help) print_help; exit 0 ;;
+    -o) FMT=$2; shift 2 ;;
+    --response-from-file) RESP_FROM_FILE=$2; shift 2 ;;  # test-only: read ES GET response from file instead of hitting network
+    -*) die "unknown flag: $1" ;;
+    *)
+      [[ -z "$TARGET" ]] || die "extra positional arg: $1"
+      TARGET=$1; shift ;;
+  esac
+done
+
+[[ -n "$TARGET" ]] || { print_help; exit 1; }
+
+case "$FMT" in
+  short|full|json) ;;
+  *) die "invalid -o value: $FMT (expected short, full, or json)" ;;
+esac
+
+[[ "$TARGET" == */* ]] || die "TARGET must be <index>/<id>, got: $TARGET"
+IDX="${TARGET%%/*}"
+ID="${TARGET#*/}"
+[[ -n "$IDX" && -n "$ID" ]] || die "TARGET must be <index>/<id>, got: $TARGET"
+
+bin_dir=$(dirname "$0")
+
+if [[ -n "$RESP_FROM_FILE" ]]; then
+  resp=$(cat "$RESP_FROM_FILE")
+else
+  load_env
+  resp=$(proxy_request GET "${IDX}/_doc/${ID}")
+fi
+
+# Wrap single doc into a _search-shaped envelope; route through formatters.
+envelope=$(echo "$resp" | jq '{hits: {total: {value: 1}, hits: [.]}}')
+
+format_rc=0
+if [[ "$FMT" == "full" ]]; then
+  echo "$envelope" | MAX_LEN=0 "$bin_dir/format-full.sh" || format_rc=$?
+else
+  echo "$envelope" | jq -r -L "$bin_dir" --arg fmt "$FMT" --argjson maxlen 0 -f "$bin_dir/format.jq" || format_rc=$?
+fi
+if (( format_rc != 0 )); then
+  echo "$CLI_NAME: formatter error — falling back to JSON" >&2
+  echo "$resp" | jq -c '._source // .' || true
+fi

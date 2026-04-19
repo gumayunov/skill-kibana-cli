@@ -1,0 +1,50 @@
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "range": {
+            "@timestamp": {
+              "gte": "now-2h",
+              "lte": "now-1h"
+            }
+          }
+        },
+        {
+          "term": {
+            "kubernetes_namespace_name.keyword": "myapp"
+          }
+        },
+        {
+          "term": {
+            "kubernetes_container_name.keyword": "worker"
+          }
+        },
+        {
+          "term": {
+            "level.keyword": "error"
+          }
+        }
+      ],
+      "must": [
+        {
+          "multi_match": {
+            "fields": [
+              "event",
+              "log",
+              "message"
+            ],
+            "query": "task failed",
+            "type": "best_fields"
+          }
+        }
+      ]
+    }
+  },
+  "size": 50,
+  "sort": [
+    {
+      "@timestamp": "desc"
+    }
+  ]
+}

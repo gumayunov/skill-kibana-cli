@@ -1,0 +1,34 @@
+kibana-cli — search logs in Elasticsearch via Kibana console proxy
+
+Usage:
+  kibana-cli [options]
+  kibana-cli --list-indices
+  kibana-cli --help
+
+Options:
+  --since <dur>         time window start as duration (default: 1h; examples: 30m, 2h, 1d)
+  --to <dur>            time window end as duration (default: now)
+  --at <ts>             time window start as absolute ISO8601 (overrides --since)
+  --until <ts>          time window end as absolute ISO8601 (overrides --to)
+  --namespace <name>    kubernetes_namespace_name (default: $KIBANACLI_DEFAULT_NAMESPACE)
+  --service <name>      kubernetes_container_name (api, worker, mqtt-consumer, ...)
+  --level <lvl>         log level (info|warning|error|...)
+  --query <text>        best-match (multi_match) against event, log, message
+  --phrase <text>       exact phrase (match_phrase) against event, log, message
+  --filter <k>=<v>      term filter on arbitrary field (repeatable)
+  --exclude <k>=<v>     must_not term on arbitrary field (repeatable)
+  --gte <k>=<v>         range filter, k >= v on arbitrary field (repeatable)
+  --lte <k>=<v>         range filter, k <= v on arbitrary field (repeatable)
+  --body <file|->       use raw ES query body from file (or stdin); bypasses
+                        all other filter flags
+  --index <pattern>     ES index pattern (default: logstash-*)
+  --limit <N>           max hits (default: 50)
+  --max-len <N>         truncate output line to N chars (default: 1000; 0 = no truncate)
+  -o short|full|json    output format (default: short)
+  --list-indices        show indices
+  --help                show this help
+
+Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+  KIBANACLI_HOST (required)     e.g. https://logs.example.com
+  KIBANACLI_API_KEY (required)  base64(id:api_key)
+  KIBANACLI_DEFAULT_NAMESPACE   default --namespace value

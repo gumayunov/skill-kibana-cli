@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "kibana-cli: bash >= 4 required (found $BASH_VERSION)" >&2
+  exit 1
+fi
+set -euo pipefail
+
+CLI_NAME="kibana-cli"
+ENV_FILE="${KIBANACLI_ENV:-$HOME/.config/kibana-cli/env}"
+
+print_help() {
+cat <<'EOF'
+kibana-cli — search logs in Elasticsearch via Kibana console proxy
+
+Usage:
+  kibana-cli [options]
+  kibana-cli --list-indices
+  kibana-cli --help
+
+Options:
+  --since <dur>         time window start as duration (default: 1h; examples: 30m, 2h, 1d)
+  --to <dur>            time window end as duration (default: now)
+  --at <ts>             time window start as absolute ISO8601 (overrides --since)
+  --until <ts>          time window end as absolute ISO8601 (overrides --to)
+  --namespace <name>    kubernetes_namespace_name (default: $KIBANACLI_DEFAULT_NAMESPACE)
+  --service <name>      kubernetes_container_name (api, worker, mqtt-consumer, ...)
+  --level <lvl>         log level (info|warning|error|...)
+  --query <text>        best-match (multi_match) against event, log, message
+  --phrase <text>       exact phrase (match_phrase) against event, log, message
+  --filter <k>=<v>      term filter on arbitrary field (repeatable)
+  --exclude <k>=<v>     must_not term on arbitrary field (repeatable)
+  --gte <k>=<v>         range filter, k >= v on arbitrary field (repeatable)
+  --lte <k>=<v>         range filter, k <= v on arbitrary field (repeatable)
+  --body <file|->       use raw ES query body from file (or stdin); bypasses
+                        all other filter flags
+  --index <pattern>     ES index pattern (default: logstash-*)
+  --limit <N>           max hits (default: 50)
+  --max-len <N>         truncate output line to N chars (default: 1000; 0 = no truncate)
+  -o short|full|json    output format (default: short)
+  --list-indices        show indices
+  --help                show this help
+
+Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+  KIBANACLI_HOST (required)     e.g. https://logs.example.com
+  KIBANACLI_API_KEY (required)  base64(id:api_key)
+  KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
+EOF
+}
+
+die() { echo "$CLI_NAME: $*" >&2; exit 1; }
+
+load_env() {
+  if [[ -n "${KIBANACLI_ENV:-}" && ! -r "$KIBANACLI_ENV" ]]; then
+    die "env file not readable: $KIBANACLI_ENV"
+  fi
+  [[ -r "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
+  [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
+  [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+}
+
+# Mirror of proxy_request in kibana-cli-get; keep synchronised.
+proxy_request() {
+  # args: method, es_path_with_query, [body_file]
+  local method=$1 es_path=$2 body=${3:-}
+  local url="${KIBANACLI_HOST%/}/api/console/proxy?path=$(printf %s "$es_path" | jq -sRr @uri)&method=$method"
+  local tmp http_code curl_rc
+  tmp=$(mktemp)
+  local -a args=(-sS -o "$tmp" -w '%{http_code}'
+    -H "Authorization: ApiKey $KIBANACLI_API_KEY"
+    -H 'kbn-xsrf: true' -H 'Content-Type: application/json')
+  curl_rc=0
+  if [[ -n "$body" ]]; then
+    http_code=$(curl "${args[@]}" -X POST "$url" --data @"$body" 2>/dev/null) || curl_rc=$?
+  else
+    http_code=$(curl "${args[@]}" -X POST "$url" 2>/dev/null) || curl_rc=$?
+  fi
+  if (( curl_rc != 0 )) || [[ -z "$http_code" ]]; then
+    http_code=000
+  fi
+  case "$http_code" in
+    2??) cat "$tmp"; rm -f "$tmp" ;;
+    401) rm -f "$tmp"; die "auth failed (401). Re-create API key per README." ;;
+    403) rm -f "$tmp"; die "access denied (403). Check API-key role_descriptors permissions." ;;
+    000) rm -f "$tmp"; die "network error: could not reach ${KIBANACLI_HOST%/}" ;;
+    *)
+      local snippet
+      snippet=$(head -c 200 "$tmp" 2>/dev/null || true)
+      rm -f "$tmp"
+      die "ES returned HTTP $http_code: $snippet"
+      ;;
+  esac
+}
+
+cmd_list_indices() {
+  load_env
+  proxy_request GET "_cat/indices?v=true&s=store.size:desc"
+}
+
+build_query() {
+  # Serialise list-arrays as JSON arrays for jq.
+  local filters_json excludes_json gtes_json ltes_json
+  filters_json=$(jq -cn '$ARGS.positional' --args -- "${FILTERS[@]+"${FILTERS[@]}"}")
+  excludes_json=$(jq -cn '$ARGS.positional' --args -- "${EXCLUDES[@]+"${EXCLUDES[@]}"}")
+  gtes_json=$(jq -cn '$ARGS.positional' --args -- "${GTES[@]+"${GTES[@]}"}")
+  ltes_json=$(jq -cn '$ARGS.positional' --args -- "${LTES[@]+"${LTES[@]}"}")
+
+  jq -n \
+    --arg since "$SINCE" \
+    --arg to "$TO" \
+    --arg at "$AT" \
+    --arg until_ts "$UNTIL" \
+    --arg ns "$NAMESPACE" \
+    --arg svc "$SERVICE" \
+    --arg lvl "$LEVEL" \
+    --arg q "$QUERY" \
+    --arg phrase "$PHRASE" \
+    --argjson filters "$filters_json" \
+    --argjson excludes "$excludes_json" \
+    --argjson gtes "$gtes_json" \
+    --argjson ltes "$ltes_json" \
+    --argjson size "$LIMIT" \
+    '
+    def mk_range:
+      {"@timestamp": (
+        (if $at != "" then {gte: $at} else {gte: ("now-" + $since)} end)
+        + (if $until_ts != "" then {lte: $until_ts}
+           elif $to != "" then {lte: ("now-" + $to)}
+           else {} end)
+      )};
+
+    def parse_kv: split("=") as $p | {k: $p[0], v: ($p[1:] | join("="))};
+    def to_terms: map(parse_kv | {term: ({"\(.k).keyword": .v})});
+    # Try numeric coercion so `status=500` becomes a JSON number; falls back to string.
+    def coerce: (tonumber? // .);
+    def to_ranges($op): map(parse_kv | {range: ({"\(.k)": ({($op): (.v | coerce)})})});
+
+    {
+      size: $size,
+      sort: [{"@timestamp": "desc"}],
+      query: {
+        bool: (
+          {filter: [{range: mk_range}]}
+          | (if $ns  != "" then .filter += [{term: {"kubernetes_namespace_name.keyword": $ns}}]  else . end)
+          | (if $svc != "" then .filter += [{term: {"kubernetes_container_name.keyword": $svc}}] else . end)
+          | (if $lvl != "" then .filter += [{term: {"level.keyword": $lvl}}]                     else . end)
+          | (if ($filters  | length) > 0 then .filter += ($filters | to_terms) else . end)
+          | (if ($gtes     | length) > 0 then .filter += ($gtes | to_ranges("gte")) else . end)
+          | (if ($ltes     | length) > 0 then .filter += ($ltes | to_ranges("lte")) else . end)
+          | (if ($excludes | length) > 0 then .must_not = ($excludes | to_terms) else . end)
+          | (if $q      != "" then .must = ((.must // []) + [{multi_match: {query: $q,      fields: ["event","log","message"], type: "best_fields"}}]) else . end)
+          | (if $phrase != "" then .must = ((.must // []) + [{multi_match: {query: $phrase, fields: ["event","log","message"], type: "phrase"}}])      else . end)
+        )
+      }
+    }
+    '
+}
+
+_active_filters_summary() {
+  local parts=() kv
+  if [[ -n "$AT" ]]; then parts+=("--at $AT"); else parts+=("--since $SINCE"); fi
+  if [[ -n "$UNTIL" ]]; then parts+=("--until $UNTIL"); elif [[ -n "$TO" ]]; then parts+=("--to $TO"); fi
+  [[ -n "$NAMESPACE" ]] && parts+=("--namespace $NAMESPACE")
+  [[ -n "$SERVICE" ]] && parts+=("--service $SERVICE")
+  [[ -n "$LEVEL" ]] && parts+=("--level $LEVEL")
+  [[ -n "$QUERY" ]] && parts+=("--query \"$QUERY\"")
+  [[ -n "$PHRASE" ]] && parts+=("--phrase \"$PHRASE\"")
+  for kv in "${FILTERS[@]+"${FILTERS[@]}"}"; do parts+=("--filter $kv"); done
+  for kv in "${EXCLUDES[@]+"${EXCLUDES[@]}"}"; do parts+=("--exclude $kv"); done
+  for kv in "${GTES[@]+"${GTES[@]}"}"; do parts+=("--gte $kv"); done
+  for kv in "${LTES[@]+"${LTES[@]}"}"; do parts+=("--lte $kv"); done
+  (IFS=' '; echo "${parts[*]}")
+}
+
+cmd_search() {
+  local body
+  if [[ -n "$BODY_FILE" ]]; then
+    if [[ "$BODY_FILE" == "-" ]]; then
+      body=$(cat)
+    else
+      [[ -r "$BODY_FILE" ]] || die "--body file not readable: $BODY_FILE"
+      body=$(cat "$BODY_FILE")
+    fi
+  else
+    body=$(build_query) || die "failed to build query (check --since/--to/--limit/etc.)"
+  fi
+  if (( DUMP_QUERY )); then
+    echo "$body"
+    return 0
+  fi
+  local bin_dir; bin_dir=$(dirname "$0")
+  local respfile
+  if [[ -n "$RESP_FILE" ]]; then
+    respfile=$RESP_FILE
+  else
+    load_env
+    respfile=$(mktemp)
+    local bodyfile; bodyfile=$(mktemp)
+    echo "$body" > "$bodyfile"
+    proxy_request POST "${INDEX}/_search" "$bodyfile" > "$respfile"
+    rm -f "$bodyfile"
+  fi
+
+  local total shown
+  total=$(jq '.hits.total.value' "$respfile")
+  shown=$(jq '.hits.hits | length' "$respfile")
+
+  if (( shown == 0 )); then
+    echo "[no hits for filters: $(_active_filters_summary)]"
+  else
+    local format_rc=0
+    if [[ "$FMT" == "full" ]]; then
+      MAX_LEN="$MAX_LEN" "$bin_dir/format-full.sh" < "$respfile" || format_rc=$?
+    else
+      jq -r -L "$bin_dir" --arg fmt "$FMT" --argjson maxlen "$MAX_LEN" -f "$bin_dir/format.jq" "$respfile" || format_rc=$?
+    fi
+    if (( format_rc != 0 )); then
+      echo "$CLI_NAME: formatter error — falling back to JSON" >&2
+      jq -c '.hits.hits[]._source' < "$respfile" || true
+    elif (( total > shown )); then
+      echo "[hits: $total, shown: $shown — use --limit N to see more]"
+    fi
+  fi
+
+  if [[ -z "$RESP_FILE" ]]; then
+    rm -f "$respfile"
+  fi
+}
+
+# --- argparse ---
+ACTION="search"
+SINCE="1h"
+TO=""
+NAMESPACE="${KIBANACLI_DEFAULT_NAMESPACE:-}"
+SERVICE=""
+LEVEL=""
+QUERY=""
+INDEX="logstash-*"
+LIMIT=50
+MAX_LEN=1000
+FMT="short"
+DUMP_QUERY=0
+RESP_FILE=""
+FILTERS=()
+EXCLUDES=()
+GTES=()
+LTES=()
+BODY_FILE=""
+AT=""
+UNTIL=""
+PHRASE=""
+while (($#)); do
+  case "$1" in
+    --help) print_help; exit 0 ;;
+    --list-indices) ACTION="list"; shift ;;
+    --since) SINCE=$2; shift 2 ;;
+    --to) TO=$2; shift 2 ;;
+    --at) AT=$2; shift 2 ;;
+    --until) UNTIL=$2; shift 2 ;;
+    --namespace) NAMESPACE=$2; shift 2 ;;
+    --service) SERVICE=$2; shift 2 ;;
+    --level) LEVEL=$2; shift 2 ;;
+    --query) QUERY=$2; shift 2 ;;
+    --phrase) PHRASE=$2; shift 2 ;;
+    --filter) FILTERS+=("$2"); shift 2 ;;
+    --exclude) EXCLUDES+=("$2"); shift 2 ;;
+    --gte) GTES+=("$2"); shift 2 ;;
+    --lte) LTES+=("$2"); shift 2 ;;
+    --body) BODY_FILE=$2; shift 2 ;;
+    --index) INDEX=$2; shift 2 ;;
+    --limit) LIMIT=$2; shift 2 ;;
+    --max-len) MAX_LEN=$2; shift 2 ;;
+    -o) FMT=$2; shift 2 ;;
+    --dump-query) DUMP_QUERY=1; shift ;;  # test-only: print query JSON and exit; see tests/run.sh
+    --search-response-from-file) RESP_FILE=$2; shift 2 ;;  # test-only: read ES response from file instead of hitting network
+    *) die "unknown flag: $1" ;;
+  esac
+done
+
+case "$FMT" in
+  short|full|json) ;;
+  *) die "invalid -o value: $FMT (expected short, full, or json)" ;;
+esac
+
+case "$ACTION" in
+  list)   cmd_list_indices ;;
+  search) cmd_search ;;
+esac
