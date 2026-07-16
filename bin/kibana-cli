@@ -6,7 +6,6 @@ fi
 set -euo pipefail
 
 CLI_NAME="kibana-cli"
-ENV_FILE="${KIBANACLI_ENV:-$HOME/.config/kibana-cli/env}"
 
 print_help() {
 cat <<'EOF'
@@ -29,6 +28,8 @@ Options:
   --phrase <text>       exact phrase (match_phrase) against event, log, message
   --filter <k>=<v>      term filter on arbitrary field (repeatable)
   --exclude <k>=<v>     must_not term on arbitrary field (repeatable)
+  --filter-phrase <k>=<v>   match_phrase filter on arbitrary field (repeatable)
+  --exclude-phrase <k>=<v>  must_not match_phrase on arbitrary field (repeatable)
   --gte <k>=<v>         range filter, k >= v on arbitrary field (repeatable)
   --lte <k>=<v>         range filter, k <= v on arbitrary field (repeatable)
   --body <file|->       use raw ES query body from file (or stdin); bypasses
@@ -40,22 +41,48 @@ Options:
   --list-indices        show indices
   --help                show this help
 
-Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+Env file — first match wins: $KIBANACLI_ENV, then .kibana-cli/env upwards
+from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)     e.g. https://logs.example.com
-  KIBANACLI_API_KEY (required)  base64(id:api_key)
+  KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
+  KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
+  KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
 EOF
 }
 
 die() { echo "$CLI_NAME: $*" >&2; exit 1; }
 
+# Mirror of find_env_file/load_env in kibana-cli-get; keep synchronised.
+find_env_file() {
+  if [[ -n "${KIBANACLI_ENV:-}" ]]; then echo "$KIBANACLI_ENV"; return; fi
+  local dir=$PWD
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.kibana-cli/env" ]]; then echo "$dir/.kibana-cli/env"; return; fi
+    dir=$(dirname "$dir")
+  done
+  echo "$HOME/.config/kibana-cli/env"
+}
+
 load_env() {
+  ENV_FILE=$(find_env_file)
   if [[ -n "${KIBANACLI_ENV:-}" && ! -r "$KIBANACLI_ENV" ]]; then
     die "env file not readable: $KIBANACLI_ENV"
   fi
   [[ -r "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
   [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
-  [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+  AUTH_MODE="${KIBANACLI_AUTH:-apikey}"
+  case "$AUTH_MODE" in
+    apikey)
+      [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+      ;;
+    cookie)
+      local cookie_file="${KIBANACLI_COOKIE_FILE:-$(dirname "$ENV_FILE")/cookie}"
+      [[ -r "$cookie_file" ]] || die "no cookie: run bin/kibana-cli-login first ($cookie_file missing)"
+      KIBANACLI_COOKIE=$(<"$cookie_file")
+      ;;
+    *) die "invalid KIBANACLI_AUTH: $AUTH_MODE (expected apikey or cookie)" ;;
+  esac
 }
 
 # Mirror of proxy_request in kibana-cli-get; keep synchronised.
@@ -91,18 +118,88 @@ proxy_request() {
   esac
 }
 
+# Mirror of _cookie_curl/ese_search in kibana-cli-get; keep synchronised.
+# Cookie mode targets Kibana's internal async-search API (/internal/search/ese)
+# instead of the console proxy: SSO users typically lack the `console` Kibana
+# privilege, while this endpoint only needs Discover-level access.
+_cookie_curl() {
+  # args: out_file, url, [payload]; prints http_code (000 on transport error)
+  local out=$1 url=$2 payload=${3:-}
+  local -a args=(-sS -o "$out" -w '%{http_code}'
+    -H "Cookie: $KIBANACLI_COOKIE" -H 'kbn-xsrf: true'
+    -H 'x-elastic-internal-origin: Kibana' -H 'Content-Type: application/json')
+  local http_code
+  if [[ -n "$payload" ]]; then
+    http_code=$(curl "${args[@]}" -X POST "$url" --data "$payload" 2>/dev/null) || http_code=000
+  else
+    http_code=$(curl "${args[@]}" "$url" 2>/dev/null) || http_code=000
+  fi
+  echo "${http_code:-000}"
+}
+
+_cookie_check() {
+  # args: http_code, tmp_file; dies on any non-2xx
+  local http_code=$1 tmp=$2
+  case "$http_code" in
+    2??) ;;
+    302|401) rm -f "$tmp"; die "cookie expired or invalid — re-run bin/kibana-cli-login" ;;
+    403) rm -f "$tmp"; die "access denied (403): your SSO user lacks Kibana privileges for this API" ;;
+    000) rm -f "$tmp"; die "network error: could not reach ${KIBANACLI_HOST%/}" ;;
+    *)
+      local snippet
+      snippet=$(head -c 200 "$tmp" 2>/dev/null || true)
+      rm -f "$tmp"
+      die "Kibana returned HTTP $http_code: $snippet"
+      ;;
+  esac
+}
+
+ese_search() {
+  # args: index, body_file; prints the raw ES response (.rawResponse)
+  local index=$1 body=$2
+  local url="${KIBANACLI_HOST%/}/internal/search/ese"
+  local tmp http_code payload id tries=0
+  tmp=$(mktemp)
+  # legacyHitsTotal=false keeps hits.total as {value, relation} like plain _search.
+  payload=$(jq -c --arg index "$index" '{legacyHitsTotal: false, params: {index: $index, body: .}}' "$body")
+  http_code=$(_cookie_curl "$tmp" "$url" "$payload")
+  _cookie_check "$http_code" "$tmp"
+  # Async search: poll by id until the cluster finishes.
+  while [[ $(jq -r '.isRunning' "$tmp") == "true" ]]; do
+    (( ++tries > 60 )) && { rm -f "$tmp"; die "async search still running after 60s — narrow the query"; }
+    id=$(jq -r '.id' "$tmp")
+    sleep 1
+    http_code=$(_cookie_curl "$tmp" "$url/$id" '{"legacyHitsTotal":false}')
+    _cookie_check "$http_code" "$tmp"
+  done
+  jq '.rawResponse' "$tmp"
+  rm -f "$tmp"
+}
+
 cmd_list_indices() {
   load_env
-  proxy_request GET "_cat/indices?v=true&s=store.size:desc"
+  if [[ "$AUTH_MODE" == "cookie" ]]; then
+    # _cat/indices needs the console privilege; list Kibana data views instead.
+    local tmp http_code
+    tmp=$(mktemp)
+    http_code=$(_cookie_curl "$tmp" "${KIBANACLI_HOST%/}/api/data_views")
+    _cookie_check "$http_code" "$tmp"
+    jq -r '.data_view[].title' "$tmp" | sort -u
+    rm -f "$tmp"
+  else
+    proxy_request GET "_cat/indices?v=true&s=store.size:desc"
+  fi
 }
 
 build_query() {
   # Serialise list-arrays as JSON arrays for jq.
-  local filters_json excludes_json gtes_json ltes_json
+  local filters_json excludes_json gtes_json ltes_json pfilters_json pexcludes_json
   filters_json=$(jq -cn '$ARGS.positional' --args -- "${FILTERS[@]+"${FILTERS[@]}"}")
   excludes_json=$(jq -cn '$ARGS.positional' --args -- "${EXCLUDES[@]+"${EXCLUDES[@]}"}")
   gtes_json=$(jq -cn '$ARGS.positional' --args -- "${GTES[@]+"${GTES[@]}"}")
   ltes_json=$(jq -cn '$ARGS.positional' --args -- "${LTES[@]+"${LTES[@]}"}")
+  pfilters_json=$(jq -cn '$ARGS.positional' --args -- "${PHRASE_FILTERS[@]+"${PHRASE_FILTERS[@]}"}")
+  pexcludes_json=$(jq -cn '$ARGS.positional' --args -- "${PHRASE_EXCLUDES[@]+"${PHRASE_EXCLUDES[@]}"}")
 
   jq -n \
     --arg since "$SINCE" \
@@ -118,6 +215,8 @@ build_query() {
     --argjson excludes "$excludes_json" \
     --argjson gtes "$gtes_json" \
     --argjson ltes "$ltes_json" \
+    --argjson pfilters "$pfilters_json" \
+    --argjson pexcludes "$pexcludes_json" \
     --argjson size "$LIMIT" \
     '
     def mk_range:
@@ -130,6 +229,7 @@ build_query() {
 
     def parse_kv: split("=") as $p | {k: $p[0], v: ($p[1:] | join("="))};
     def to_terms: map(parse_kv | {term: ({"\(.k).keyword": .v})});
+    def to_phrases: map(parse_kv | {match_phrase: ({"\(.k)": .v})});
     # Try numeric coercion so `status=500` becomes a JSON number; falls back to string.
     def coerce: (tonumber? // .);
     def to_ranges($op): map(parse_kv | {range: ({"\(.k)": ({($op): (.v | coerce)})})});
@@ -144,9 +244,11 @@ build_query() {
           | (if $svc != "" then .filter += [{term: {"kubernetes_container_name.keyword": $svc}}] else . end)
           | (if $lvl != "" then .filter += [{term: {"level.keyword": $lvl}}]                     else . end)
           | (if ($filters  | length) > 0 then .filter += ($filters | to_terms) else . end)
+          | (if ($pfilters | length) > 0 then .filter += ($pfilters | to_phrases) else . end)
           | (if ($gtes     | length) > 0 then .filter += ($gtes | to_ranges("gte")) else . end)
           | (if ($ltes     | length) > 0 then .filter += ($ltes | to_ranges("lte")) else . end)
-          | (if ($excludes | length) > 0 then .must_not = ($excludes | to_terms) else . end)
+          | (if ($excludes | length) > 0 then .must_not = ((.must_not // []) + ($excludes | to_terms)) else . end)
+          | (if ($pexcludes | length) > 0 then .must_not = ((.must_not // []) + ($pexcludes | to_phrases)) else . end)
           | (if $q      != "" then .must = ((.must // []) + [{multi_match: {query: $q,      fields: ["event","log","message"], type: "best_fields"}}]) else . end)
           | (if $phrase != "" then .must = ((.must // []) + [{multi_match: {query: $phrase, fields: ["event","log","message"], type: "phrase"}}])      else . end)
         )
@@ -165,7 +267,9 @@ _active_filters_summary() {
   [[ -n "$QUERY" ]] && parts+=("--query \"$QUERY\"")
   [[ -n "$PHRASE" ]] && parts+=("--phrase \"$PHRASE\"")
   for kv in "${FILTERS[@]+"${FILTERS[@]}"}"; do parts+=("--filter $kv"); done
+  for kv in "${PHRASE_FILTERS[@]+"${PHRASE_FILTERS[@]}"}"; do parts+=("--filter-phrase $kv"); done
   for kv in "${EXCLUDES[@]+"${EXCLUDES[@]}"}"; do parts+=("--exclude $kv"); done
+  for kv in "${PHRASE_EXCLUDES[@]+"${PHRASE_EXCLUDES[@]}"}"; do parts+=("--exclude-phrase $kv"); done
   for kv in "${GTES[@]+"${GTES[@]}"}"; do parts+=("--gte $kv"); done
   for kv in "${LTES[@]+"${LTES[@]}"}"; do parts+=("--lte $kv"); done
   (IFS=' '; echo "${parts[*]}")
@@ -196,7 +300,11 @@ cmd_search() {
     respfile=$(mktemp)
     local bodyfile; bodyfile=$(mktemp)
     echo "$body" > "$bodyfile"
-    proxy_request POST "${INDEX}/_search" "$bodyfile" > "$respfile"
+    if [[ "$AUTH_MODE" == "cookie" ]]; then
+      ese_search "$INDEX" "$bodyfile" > "$respfile"
+    else
+      proxy_request POST "${INDEX}/_search" "$bodyfile" > "$respfile"
+    fi
     rm -f "$bodyfile"
   fi
 
@@ -242,6 +350,8 @@ DUMP_QUERY=0
 RESP_FILE=""
 FILTERS=()
 EXCLUDES=()
+PHRASE_FILTERS=()
+PHRASE_EXCLUDES=()
 GTES=()
 LTES=()
 BODY_FILE=""
@@ -263,6 +373,8 @@ while (($#)); do
     --phrase) PHRASE=$2; shift 2 ;;
     --filter) FILTERS+=("$2"); shift 2 ;;
     --exclude) EXCLUDES+=("$2"); shift 2 ;;
+    --filter-phrase) PHRASE_FILTERS+=("$2"); shift 2 ;;
+    --exclude-phrase) PHRASE_EXCLUDES+=("$2"); shift 2 ;;
     --gte) GTES+=("$2"); shift 2 ;;
     --lte) LTES+=("$2"); shift 2 ;;
     --body) BODY_FILE=$2; shift 2 ;;

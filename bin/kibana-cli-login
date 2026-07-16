@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Obtain/refresh the SSO cookie for KIBANACLI_AUTH=cookie via a real browser.
+# Thin wrapper around scripts/browser-login.mjs; needs node + playwright
+# (one-time: cd <repo root> && npm install && npx playwright install chromium).
+set -euo pipefail
+
+die() { echo "kibana-cli-login: $*" >&2; exit 1; }
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+command -v node >/dev/null 2>&1 || die "node is required (>= 18)"
+[[ -d "$root/node_modules/playwright" ]] || \
+  die "playwright not installed — run: cd $root && npm install && npx playwright install chromium"
+
+exec node "$root/scripts/browser-login.mjs" "$@"

@@ -17,12 +17,14 @@ description: Use when нужно посмотреть логи кластера 
 
 Если файла нет или CLI падает с `no config: set KIBANACLI_HOST …` — см. `README.md` рядом с этим файлом (инструкция по созданию API-ключа и заполнению env).
 
+Конфиг может быть и проектным: CLI ищет env-файл в порядке `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от cwd → `~/.config/kibana-cli/env`. Режим аутентификации задаётся в env-файле: `KIBANACLI_AUTH=apikey` (дефолт) или `KIBANACLI_AUTH=cookie` (SSO; cookie лежит рядом с env-файлом). Если CLI падает с `cookie expired or invalid — re-run bin/kibana-cli-login` — попроси пользователя выполнить `bin/kibana-cli-login` (откроется окно браузера; при живой SSO-сессии закроется само) и повтори команду.
+
 ## Команды
 
 | Команда | Назначение |
 |---|---|
 | `bin/kibana-cli [options]` | поиск логов по фильтрам |
-| `bin/kibana-cli --list-indices` | список доступных индексов и их размер |
+| `bin/kibana-cli --list-indices` | список доступных индексов и их размер (в cookie-режиме — список data views без размеров) |
 | `bin/kibana-cli --help` | перечень всех флагов и дефолтов |
 | `bin/kibana-cli-get <index>/<id> [-o short\|full\|json]` | достать один документ по id (например, после обрезки) |
 | `presets/errors-last.sh <duration> [extra flags]` | ошибки за `<duration>` в дефолтном namespace |
@@ -35,7 +37,7 @@ description: Use when нужно посмотреть логи кластера 
 1. Старт широкий: `bin/kibana-cli --since 1h --level error` (при инциденте подставь актуальное окно — `30m`, `6h`, `1d`). Если инцидент описан точным временем — `--at 2026-04-19T10:30:00Z --until 2026-04-19T11:00:00Z` вместо относительных.
 2. Есть гипотеза по сервису → добавь `--service api|worker|frontend|postgresql|...`.
 3. Есть текст / id / имя функции / traceback-сигнатура → `--query "..."` (best-match, матчит по полям `event`, `log`, `message`). Если нужна **точная фраза** (имя constraint, уникальная строка ошибки) — `--phrase "..."` (match_phrase, те же поля).
-4. Нужно отфильтровать по произвольному полю (например, `path`, `user_id`, `status`) — `--filter <k>=<v>` (term на `<k>.keyword`). **Исключить** — `--exclude <k>=<v>` (must_not). Числовое сравнение — `--gte <k>=<v>` / `--lte <k>=<v>` (например `--gte status=500` для всех 5xx, `--gte duration_ms=1000` для медленных запросов). Все повторяемы. Пример: `--exclude path=/api/health` убирает health-probes.
+4. Нужно отфильтровать по произвольному полю (например, `path`, `user_id`, `status`) — `--filter <k>=<v>` (term на `<k>.keyword`). **Исключить** — `--exclude <k>=<v>` (must_not). Если нужно совпадение по токену внутри значения, а не точное значение целиком (например, все поды, в имени которых есть `canary`) — `--filter-phrase` / `--exclude-phrase <k>=<v>` (match_phrase, как фильтры в Kibana Discover). Числовое сравнение — `--gte <k>=<v>` / `--lte <k>=<v>` (например `--gte status=500` для всех 5xx, `--gte duration_ms=1000` для медленных запросов). Все повторяемы. Пример: `--exclude path=/api/health` убирает health-probes.
 5. Слишком много хитов — уточняй `--since`, `--level`, `--service`, потом поднимай `--limit` точечно.
 6. Слишком мало и непонятно — сними `--level`, смотри `info|warning` вокруг времени инцидента, чтобы поймать контекст.
 7. Нужен запрос, который не выражается флагами (`exists`, `wildcard`, сложный `bool`, агрегации, `search_after`) — `--body <file|->` принимает raw ES DSL. Пример: `jq -n '{...}' | kibana-cli --body - -o json`. Этот флаг игнорирует все остальные фильтры — body идёт в ES как есть.

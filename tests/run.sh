@@ -41,6 +41,8 @@ run_case "get-short" "expected/structlog-short.txt" \
   bash -c "../bin/kibana-cli-get logstash-2026.04.18/fixture-doc-2 -o short --response-from-file fixtures/single-doc.json"
 run_case "filter-exclude-query" "cases/filter-exclude-query.expected.sorted" \
   bash -c "../bin/kibana-cli --since 1h --namespace myapp --filter user_id=abc --filter method=GET --exclude path=/api/health --exclude user_agent=kube-probe/1.34 --dump-query | jq -S ."
+run_case "phrase-filters" "cases/phrase-filters.expected.sorted" \
+  bash -c "../bin/kibana-cli --since 1h --namespace myapp --filter-phrase kubernetes.cluster_name=k8s-prod01 --filter-phrase kubernetes.container_name=app --exclude-phrase kubernetes.pod_name=canary --exclude user_agent=kube-probe/1.34 --dump-query | jq -S ."
 run_case "body-passthrough" "fixtures/custom-body.json" \
   bash -c "../bin/kibana-cli --body fixtures/custom-body.json --dump-query"
 run_case "advanced-query" "cases/advanced-query.expected.sorted" \

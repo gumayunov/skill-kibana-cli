@@ -105,6 +105,20 @@ chmod 600 ~/.config/kibana-cli/env
 
 Путь можно переопределить через `KIBANACLI_ENV=/path/to/env`.
 
+#### Per-project конфиг
+
+Если Kibana (или дефолтные фильтры) у каждого проекта своя, env-файл можно
+положить в корень проекта — `.kibana-cli/env`. CLI ищет конфиг в таком
+порядке: `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от текущей
+директории → `~/.config/kibana-cli/env`. Файл cookie (для SSO-режима) по
+умолчанию живёт рядом с env-файлом — у каждого проекта своя cookie.
+`.kibana-cli/cookie` в git попадать не должен — добавьте в `.gitignore`
+проекта (или положите `.kibana-cli/.gitignore` с строкой `cookie`).
+
+Режим аутентификации задаётся в env-файле параметром `KIBANACLI_AUTH`:
+`apikey` (дефолт, нужен `KIBANACLI_API_KEY`) или `cookie` (SSO; см. следующий
+раздел).
+
 #### Шаг 4. Smoke-тест
 
 ```bash
@@ -114,6 +128,53 @@ chmod 600 ~/.config/kibana-cli/env
 
 Первая команда должна показать `logstash-YYYY.MM.DD` индекс. Вторая — до трёх
 свежих записей.
+
+## Альтернатива: SSO-cookie (браузерный логин)
+
+Если Kibana спрятана за SSO-прокси (oauth2-proxy / ADFS / SAML) и API-ключ
+сделать нельзя (нет admin-доступа, а заголовок `Authorization` до Kibana не
+доходит — прокси требует свою cookie), CLI умеет cookie-режим:
+`KIBANACLI_AUTH=cookie` в env-файле. Файл cookie CLI берёт рядом с env-файлом
+(переопределяется `KIBANACLI_COOKIE_FILE`).
+
+Как это работает:
+
+- `bin/kibana-cli-login` открывает настоящее окно Chromium (Playwright) на
+  `KIBANACLI_HOST`; вы проходите SSO как обычно. Как только `GET /api/status`
+  с cookie из браузера возвращает 200, cookie сохраняется рядом с env-файлом
+  (chmod 600) и окно закрывается.
+- Профиль браузера персистентный (`~/.config/kibana-cli/browser-profile`,
+  общий на все проекты), поэтому повторный `kibana-cli-login` обычно проходит
+  молча — окно мелькает и закрывается без вопросов. Протухла cookie (CLI
+  скажет `cookie expired or invalid`) — просто перезапустите login.
+- Поиск в этом режиме идёт не через console proxy, а через внутренний API
+  Kibana `/internal/search/ese` (тот же, которым пользуется Discover): у
+  SSO-пользователей обычно нет Kibana-привилегии `console`, а для этого
+  endpoint достаточно прав уровня Discover. `--list-indices` показывает
+  data views (`/api/data_views`) вместо `_cat/indices` — по той же причине.
+
+Setup (пример с per-project конфигом):
+
+```bash
+npm install && npx playwright install chromium   # one-time, в корне этого репо
+
+# в корне проекта, логи которого смотрим:
+mkdir -p .kibana-cli
+cat > .kibana-cli/env <<'EOF'
+KIBANACLI_HOST=https://kibana.example.com
+KIBANACLI_AUTH=cookie
+EOF
+echo 'cookie' > .kibana-cli/.gitignore
+
+kibana-cli-login          # откроется браузер, после SSO появится .kibana-cli/cookie
+kibana-cli --list-indices | head
+kibana-cli --index 'my-app-*' --since 10m --limit 3
+```
+
+Ограничения cookie-режима: живёт столько, сколько SSO-сессия (обычно
+часы–сутки), machine-to-machine сценарии без периодического браузерного
+логина не получатся; `kibana-cli-get` достаёт документ через `ids`-query
+(прямой `GET <index>/_doc/<id>` тоже требует console-привилегию).
 
 ## Ротация / отзыв API-key
 
@@ -154,6 +215,8 @@ Elasticsearch. Все тесты должны проходить.
   bash 3.2 не подойдёт: `brew install bash`.
 - **curl** — обычно уже есть.
 - **jq ≥ 1.6** — `brew install jq` / `apt install jq`.
+- **node ≥ 18 + playwright** — только для `kibana-cli-login` (SSO-cookie
+  режим); apikey-режиму не нужны.
 
 ## Агентская часть
 
@@ -166,13 +229,17 @@ Elasticsearch. Все тесты должны проходить.
   окна) или `--at`/`--until` (абсолютные ISO8601), `--namespace`, `--service`,
   `--level`, `--query` (best-match), `--phrase` (exact match_phrase),
   `--filter <k>=<v>` (term на произвольное поле, повторяемый),
-  `--exclude <k>=<v>` (must_not, повторяемый), `--gte <k>=<v>` / `--lte <k>=<v>`
+  `--exclude <k>=<v>` (must_not, повторяемый), `--filter-phrase` /
+  `--exclude-phrase <k>=<v>` (match_phrase на произвольное поле — когда нужно
+  вхождение токена, а не точное совпадение `.keyword`),
+  `--gte <k>=<v>` / `--lte <k>=<v>`
   (range, повторяемые), `--body <file|->` (escape hatch: raw ES query body,
   байпасит все остальные фильтры), `--index`, `--limit`, `--max-len`, `-o`.
   Полный список — `kibana-cli --help`.
 - `bin/kibana-cli-get` — достать один документ по `<index>/<id>` (нужно после
   маркера `[truncated: ... id=...]`).
 - `presets/*.sh` — обёртки для частых сценариев (`errors-last.sh`, `service.sh`).
+- `bin/kibana-cli-login` — браузерный SSO-логин для `KIBANACLI_AUTH=cookie`.
 - `scripts/setup.sh` — one-shot создание ключа + env-файл + smoke.
 - `scripts/api-key-create.sh` — создать ключ, вернуть `encoded` на stdout.
 - `scripts/api-key-invalidate.sh <name>` — отозвать все ключи с заданным именем.

@@ -17,6 +17,8 @@ Options:
   --phrase <text>       exact phrase (match_phrase) against event, log, message
   --filter <k>=<v>      term filter on arbitrary field (repeatable)
   --exclude <k>=<v>     must_not term on arbitrary field (repeatable)
+  --filter-phrase <k>=<v>   match_phrase filter on arbitrary field (repeatable)
+  --exclude-phrase <k>=<v>  must_not match_phrase on arbitrary field (repeatable)
   --gte <k>=<v>         range filter, k >= v on arbitrary field (repeatable)
   --lte <k>=<v>         range filter, k <= v on arbitrary field (repeatable)
   --body <file|->       use raw ES query body from file (or stdin); bypasses
@@ -28,7 +30,10 @@ Options:
   --list-indices        show indices
   --help                show this help
 
-Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+Env file — first match wins: $KIBANACLI_ENV, then .kibana-cli/env upwards
+from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)     e.g. https://logs.example.com
-  KIBANACLI_API_KEY (required)  base64(id:api_key)
+  KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
+  KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
+  KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
