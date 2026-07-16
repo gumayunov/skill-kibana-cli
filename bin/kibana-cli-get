@@ -7,7 +7,6 @@ set -euo pipefail
 trap 'exit 0' PIPE
 
 CLI_NAME="kibana-cli-get"
-ENV_FILE="${KIBANACLI_ENV:-$HOME/.config/kibana-cli/env}"
 
 die() { echo "$CLI_NAME: $*" >&2; exit 1; }
 
@@ -25,19 +24,46 @@ Options:
   -o short|full|json    output format (default: full)
   --help                show this help
 
-Env (from ~/.config/kibana-cli/env or $KIBANACLI_ENV):
+Env file — first match wins: $KIBANACLI_ENV, then .kibana-cli/env upwards
+from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)
-  KIBANACLI_API_KEY (required)
+  KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
+  KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
+  KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
+  KIBANACLI_MESSAGE_FIELDS, KIBANACLI_CONTEXT_FIELDS — see kibana-cli --help
 EOF
 }
 
+# Mirror of find_env_file/load_env in kibana-cli; keep synchronised.
+find_env_file() {
+  if [[ -n "${KIBANACLI_ENV:-}" ]]; then echo "$KIBANACLI_ENV"; return; fi
+  local dir=$PWD
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.kibana-cli/env" ]]; then echo "$dir/.kibana-cli/env"; return; fi
+    dir=$(dirname "$dir")
+  done
+  echo "$HOME/.config/kibana-cli/env"
+}
+
 load_env() {
+  ENV_FILE=$(find_env_file)
   if [[ -n "${KIBANACLI_ENV:-}" && ! -r "$KIBANACLI_ENV" ]]; then
     die "env file not readable: $KIBANACLI_ENV"
   fi
   [[ -r "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
   [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
-  [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+  AUTH_MODE="${KIBANACLI_AUTH:-apikey}"
+  case "$AUTH_MODE" in
+    apikey)
+      [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
+      ;;
+    cookie)
+      local cookie_file="${KIBANACLI_COOKIE_FILE:-$(dirname "$ENV_FILE")/cookie}"
+      [[ -r "$cookie_file" ]] || die "no cookie: run bin/kibana-cli-login first ($cookie_file missing)"
+      KIBANACLI_COOKIE=$(<"$cookie_file")
+      ;;
+    *) die "invalid KIBANACLI_AUTH: $AUTH_MODE (expected apikey or cookie)" ;;
+  esac
 }
 
 # Mirror of proxy_request in kibana-cli; keep synchronised.
@@ -73,6 +99,64 @@ proxy_request() {
   esac
 }
 
+# Mirror of _cookie_curl/ese_search in kibana-cli; keep synchronised.
+# Cookie mode targets Kibana's internal async-search API (/internal/search/ese)
+# instead of the console proxy: SSO users typically lack the `console` Kibana
+# privilege, while this endpoint only needs Discover-level access.
+_cookie_curl() {
+  # args: out_file, url, [payload]; prints http_code (000 on transport error)
+  local out=$1 url=$2 payload=${3:-}
+  local -a args=(-sS -o "$out" -w '%{http_code}'
+    -H "Cookie: $KIBANACLI_COOKIE" -H 'kbn-xsrf: true'
+    -H 'x-elastic-internal-origin: Kibana' -H 'Content-Type: application/json')
+  local http_code
+  if [[ -n "$payload" ]]; then
+    http_code=$(curl "${args[@]}" -X POST "$url" --data "$payload" 2>/dev/null) || http_code=000
+  else
+    http_code=$(curl "${args[@]}" "$url" 2>/dev/null) || http_code=000
+  fi
+  echo "${http_code:-000}"
+}
+
+_cookie_check() {
+  # args: http_code, tmp_file; dies on any non-2xx
+  local http_code=$1 tmp=$2
+  case "$http_code" in
+    2??) ;;
+    302|401) rm -f "$tmp"; die "cookie expired or invalid — re-run bin/kibana-cli-login" ;;
+    403) rm -f "$tmp"; die "access denied (403): your SSO user lacks Kibana privileges for this API" ;;
+    000) rm -f "$tmp"; die "network error: could not reach ${KIBANACLI_HOST%/}" ;;
+    *)
+      local snippet
+      snippet=$(head -c 200 "$tmp" 2>/dev/null || true)
+      rm -f "$tmp"
+      die "Kibana returned HTTP $http_code: $snippet"
+      ;;
+  esac
+}
+
+ese_search() {
+  # args: index, body_file; prints the raw ES response (.rawResponse)
+  local index=$1 body=$2
+  local url="${KIBANACLI_HOST%/}/internal/search/ese"
+  local tmp http_code payload id tries=0
+  tmp=$(mktemp)
+  # legacyHitsTotal=false keeps hits.total as {value, relation} like plain _search.
+  payload=$(jq -c --arg index "$index" '{legacyHitsTotal: false, params: {index: $index, body: .}}' "$body")
+  http_code=$(_cookie_curl "$tmp" "$url" "$payload")
+  _cookie_check "$http_code" "$tmp"
+  # Async search: poll by id until the cluster finishes.
+  while [[ $(jq -r '.isRunning' "$tmp") == "true" ]]; do
+    (( ++tries > 60 )) && { rm -f "$tmp"; die "async search still running after 60s — narrow the query"; }
+    id=$(jq -r '.id' "$tmp")
+    sleep 1
+    http_code=$(_cookie_curl "$tmp" "$url/$id" '{"legacyHitsTotal":false}')
+    _cookie_check "$http_code" "$tmp"
+  done
+  jq '.rawResponse' "$tmp"
+  rm -f "$tmp"
+}
+
 FMT="full"
 TARGET=""
 RESP_FROM_FILE=""
@@ -106,7 +190,16 @@ if [[ -n "$RESP_FROM_FILE" ]]; then
   resp=$(cat "$RESP_FROM_FILE")
 else
   load_env
-  resp=$(proxy_request GET "${IDX}/_doc/${ID}")
+  if [[ "$AUTH_MODE" == "cookie" ]]; then
+    # No direct _doc GET without the console privilege; fetch by ids query.
+    bodyfile=$(mktemp)
+    jq -n --arg id "$ID" '{size: 1, query: {ids: {values: [$id]}}}' > "$bodyfile"
+    resp=$(ese_search "$IDX" "$bodyfile" | jq '.hits.hits[0]')
+    rm -f "$bodyfile"
+    [[ "$resp" != "null" ]] || die "document not found: $TARGET"
+  else
+    resp=$(proxy_request GET "${IDX}/_doc/${ID}")
+  fi
 fi
 
 # Wrap single doc into a _search-shaped envelope; route through formatters.
