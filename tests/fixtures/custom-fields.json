@@ -1,0 +1,1 @@
+{"hits":{"total":{"value":1},"hits":[{"_index":"logstash-2026.04.18","_id":"cf-1","_source":{"@timestamp":"2026-04-18T10:00:00.123Z","level":"info","msg":"hello from msg","message":"should lose to msg","kubernetes":{"container_name":"app","pod_name":"web-1"},"named_tags":{"queue":"default","jid":"abc"},"host":"web-1","noisy_meta":{"a":1,"b":2}}}]}}

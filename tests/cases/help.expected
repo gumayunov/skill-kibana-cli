@@ -37,3 +37,9 @@ from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
   KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
+  KIBANACLI_MESSAGE_FIELDS      fields searched by --query/--phrase and used as
+                                the line body in short/full output, first
+                                non-empty wins (default: event,log,message)
+  KIBANACLI_CONTEXT_FIELDS      whitelist for the k=v tail in short output;
+                                dotted paths address nested objects
+                                (default: empty = all non-reserved fields)

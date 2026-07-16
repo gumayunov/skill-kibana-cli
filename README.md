@@ -176,6 +176,19 @@ kibana-cli --index 'my-app-*' --since 10m --limit 3
 логина не получатся; `kibana-cli-get` достаёт документ через `ids`-query
 (прямой `GET <index>/_doc/<id>` тоже требует console-привилегию).
 
+## Поля сообщений и контекста
+
+Схема логов у всех разная, поэтому поля настраиваются в env-файле:
+
+- `KIBANACLI_MESSAGE_FIELDS` (дефолт `event,log,message`) — по каким полям
+  ищут `--query`/`--phrase` и из какого поля берётся текст строки в
+  `short`/`full` выводе (первое непустое из списка).
+- `KIBANACLI_CONTEXT_FIELDS` (дефолт пусто) — whitelist полей для хвоста
+  `k=v` в short-выводе. Пусто — показываются все не-служебные поля; если
+  логи многословные (объекты метаданных в каждой записи), перечислите
+  только нужное. Точка в имени адресует вложенные объекты:
+  `KIBANACLI_CONTEXT_FIELDS=host,named_tags.queue,named_tags.trace_id`.
+
 ## Ротация / отзыв API-key
 
 Удобный путь — `scripts/api-key-invalidate.sh`:
@@ -238,7 +251,9 @@ Elasticsearch. Все тесты должны проходить.
   Полный список — `kibana-cli --help`.
 - `bin/kibana-cli-get` — достать один документ по `<index>/<id>` (нужно после
   маркера `[truncated: ... id=...]`).
-- `presets/*.sh` — обёртки для частых сценариев (`errors-last.sh`, `service.sh`).
+- `presets/*.sh` — обёртки для частых сценариев (`errors-last.sh`, `service.sh`);
+  `presets/TEMPLATE.sh` — шаблон проектного пресета (кладётся в `.kibana-cli/`
+  проекта рядом с его `env`, см. «Пресеты проекта» в `SKILL.md`).
 - `bin/kibana-cli-login` — браузерный SSO-логин для `KIBANACLI_AUTH=cookie`.
 - `scripts/setup.sh` — one-shot создание ключа + env-файл + smoke.
 - `scripts/api-key-create.sh` — создать ключ, вернуть `encoded` на stdout.

@@ -30,6 +30,7 @@ from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
   KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
   KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
+  KIBANACLI_MESSAGE_FIELDS, KIBANACLI_CONTEXT_FIELDS — see kibana-cli --help
 EOF
 }
 

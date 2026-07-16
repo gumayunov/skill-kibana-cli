@@ -48,6 +48,12 @@ from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
   KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
+  KIBANACLI_MESSAGE_FIELDS      fields searched by --query/--phrase and used as
+                                the line body in short/full output, first
+                                non-empty wins (default: event,log,message)
+  KIBANACLI_CONTEXT_FIELDS      whitelist for the k=v tail in short output;
+                                dotted paths address nested objects
+                                (default: empty = all non-reserved fields)
 EOF
 }
 
@@ -217,6 +223,7 @@ build_query() {
     --argjson ltes "$ltes_json" \
     --argjson pfilters "$pfilters_json" \
     --argjson pexcludes "$pexcludes_json" \
+    --arg msg_fields "${KIBANACLI_MESSAGE_FIELDS:-event,log,message}" \
     --argjson size "$LIMIT" \
     '
     def mk_range:
@@ -249,8 +256,8 @@ build_query() {
           | (if ($ltes     | length) > 0 then .filter += ($ltes | to_ranges("lte")) else . end)
           | (if ($excludes | length) > 0 then .must_not = ((.must_not // []) + ($excludes | to_terms)) else . end)
           | (if ($pexcludes | length) > 0 then .must_not = ((.must_not // []) + ($pexcludes | to_phrases)) else . end)
-          | (if $q      != "" then .must = ((.must // []) + [{multi_match: {query: $q,      fields: ["event","log","message"], type: "best_fields"}}]) else . end)
-          | (if $phrase != "" then .must = ((.must // []) + [{multi_match: {query: $phrase, fields: ["event","log","message"], type: "phrase"}}])      else . end)
+          | (if $q      != "" then .must = ((.must // []) + [{multi_match: {query: $q,      fields: ($msg_fields | split(",")), type: "best_fields"}}]) else . end)
+          | (if $phrase != "" then .must = ((.must // []) + [{multi_match: {query: $phrase, fields: ($msg_fields | split(",")), type: "phrase"}}])      else . end)
         )
       }
     }
@@ -277,6 +284,12 @@ _active_filters_summary() {
 
 cmd_search() {
   local body
+  # Load config before building the query: KIBANACLI_MESSAGE_FIELDS et al.
+  # affect the query itself. Offline modes (--dump-query,
+  # --search-response-from-file) run without config — env vars still apply.
+  if [[ -z "$RESP_FILE" ]] && (( ! DUMP_QUERY )); then
+    load_env
+  fi
   if [[ -n "$BODY_FILE" ]]; then
     if [[ "$BODY_FILE" == "-" ]]; then
       body=$(cat)
@@ -296,7 +309,6 @@ cmd_search() {
   if [[ -n "$RESP_FILE" ]]; then
     respfile=$RESP_FILE
   else
-    load_env
     respfile=$(mktemp)
     local bodyfile; bodyfile=$(mktemp)
     echo "$body" > "$bodyfile"
