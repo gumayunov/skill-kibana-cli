@@ -10,7 +10,7 @@
         {"term": {"level.keyword": "error"}}
       ],
       "must": [
-        {"multi_match": {"query": "task failed", "fields": ["event", "log", "message"], "type": "best_fields"}}
+        {"simple_query_string": {"query": "task failed", "fields": ["event", "log", "message"], "default_operator": "and"}}
       ]
     }
   }

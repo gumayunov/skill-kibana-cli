@@ -240,7 +240,8 @@ Elasticsearch. Все тесты должны проходить.
 
 - `bin/kibana-cli` — поиск по логам. Флаги: `--since`/`--to` (относительные
   окна) или `--at`/`--until` (абсолютные ISO8601), `--namespace`, `--service`,
-  `--level`, `--query` (best-match), `--phrase` (exact match_phrase),
+  `--level`, `--query` (simple_query_string: слова по AND, `"фразы"`, `|`, `-`),
+  `--phrase` (exact match_phrase),
   `--filter <k>=<v>` (term на произвольное поле, повторяемый),
   `--exclude <k>=<v>` (must_not, повторяемый), `--filter-phrase` /
   `--exclude-phrase <k>=<v>` (match_phrase на произвольное поле — когда нужно

@@ -24,7 +24,9 @@ Options:
   --namespace <name>    kubernetes_namespace_name (default: $KIBANACLI_DEFAULT_NAMESPACE)
   --service <name>      kubernetes_container_name (api, worker, mqtt-consumer, ...)
   --level <lvl>         log level (info|warning|error|...)
-  --query <text>        best-match (multi_match) against event, log, message
+  --query <text>        simple_query_string against event, log, message;
+                        words are AND-ed, syntax: "quoted phrase", | (OR),
+                        - (NOT), * (prefix); unknown syntax is ignored, not an error
   --phrase <text>       exact phrase (match_phrase) against event, log, message
   --filter <k>=<v>      term filter on arbitrary field (repeatable)
   --exclude <k>=<v>     must_not term on arbitrary field (repeatable)
@@ -256,7 +258,7 @@ build_query() {
           | (if ($ltes     | length) > 0 then .filter += ($ltes | to_ranges("lte")) else . end)
           | (if ($excludes | length) > 0 then .must_not = ((.must_not // []) + ($excludes | to_terms)) else . end)
           | (if ($pexcludes | length) > 0 then .must_not = ((.must_not // []) + ($pexcludes | to_phrases)) else . end)
-          | (if $q      != "" then .must = ((.must // []) + [{multi_match: {query: $q,      fields: ($msg_fields | split(",")), type: "best_fields"}}]) else . end)
+          | (if $q      != "" then .must = ((.must // []) + [{simple_query_string: {query: $q, fields: ($msg_fields | split(",")), default_operator: "and"}}]) else . end)
           | (if $phrase != "" then .must = ((.must // []) + [{multi_match: {query: $phrase, fields: ($msg_fields | split(",")), type: "phrase"}}])      else . end)
         )
       }
@@ -381,8 +383,8 @@ while (($#)); do
     --namespace) NAMESPACE=$2; shift 2 ;;
     --service) SERVICE=$2; shift 2 ;;
     --level) LEVEL=$2; shift 2 ;;
-    --query) QUERY=$2; shift 2 ;;
-    --phrase) PHRASE=$2; shift 2 ;;
+    --query) [[ -z "$QUERY" ]] || die "--query given twice; combine into one query: --query '\"a\" | \"b\"'"; QUERY=$2; shift 2 ;;
+    --phrase) [[ -z "$PHRASE" ]] || die "--phrase given twice; for OR of phrases use --query '\"a\" | \"b\"'"; PHRASE=$2; shift 2 ;;
     --filter) FILTERS+=("$2"); shift 2 ;;
     --exclude) EXCLUDES+=("$2"); shift 2 ;;
     --filter-phrase) PHRASE_FILTERS+=("$2"); shift 2 ;;

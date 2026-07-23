@@ -13,7 +13,9 @@ Options:
   --namespace <name>    kubernetes_namespace_name (default: $KIBANACLI_DEFAULT_NAMESPACE)
   --service <name>      kubernetes_container_name (api, worker, mqtt-consumer, ...)
   --level <lvl>         log level (info|warning|error|...)
-  --query <text>        best-match (multi_match) against event, log, message
+  --query <text>        simple_query_string against event, log, message;
+                        words are AND-ed, syntax: "quoted phrase", | (OR),
+                        - (NOT), * (prefix); unknown syntax is ignored, not an error
   --phrase <text>       exact phrase (match_phrase) against event, log, message
   --filter <k>=<v>      term filter on arbitrary field (repeatable)
   --exclude <k>=<v>     must_not term on arbitrary field (repeatable)

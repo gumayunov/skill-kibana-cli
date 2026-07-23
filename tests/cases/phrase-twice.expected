@@ -1,0 +1,1 @@
+kibana-cli: --phrase given twice; for OR of phrases use --query '"a" | "b"'
