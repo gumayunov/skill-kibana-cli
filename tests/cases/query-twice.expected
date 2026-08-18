@@ -1,0 +1,1 @@
+kibana-cli: --query given twice; combine into one query: --query '"a" | "b"'

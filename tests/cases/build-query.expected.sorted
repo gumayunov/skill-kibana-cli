@@ -28,14 +28,14 @@
       ],
       "must": [
         {
-          "multi_match": {
+          "simple_query_string": {
+            "default_operator": "and",
             "fields": [
               "event",
               "log",
               "message"
             ],
-            "query": "task failed",
-            "type": "best_fields"
+            "query": "task failed"
           }
         }
       ]

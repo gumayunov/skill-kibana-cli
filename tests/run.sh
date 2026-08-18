@@ -44,11 +44,17 @@ run_case "filter-exclude-query" "cases/filter-exclude-query.expected.sorted" \
 run_case "custom-fields-short" "expected/custom-fields-short.txt" \
   bash -c "KIBANACLI_MESSAGE_FIELDS=msg KIBANACLI_CONTEXT_FIELDS=host,named_tags.queue,missing.field jq -r -L ../bin --arg fmt short --argjson maxlen 0 -f ../bin/format.jq fixtures/custom-fields.json"
 run_case "custom-message-fields-query" "cases/custom-message-fields.expected" \
-  bash -c "KIBANACLI_MESSAGE_FIELDS=msg,description ../bin/kibana-cli --since 1h --query boom --dump-query | jq -c '.query.bool.must[0].multi_match.fields'"
+  bash -c "KIBANACLI_MESSAGE_FIELDS=msg,description ../bin/kibana-cli --since 1h --query boom --dump-query | jq -c '.query.bool.must[0].simple_query_string.fields'"
 run_case "phrase-filters" "cases/phrase-filters.expected.sorted" \
   bash -c "../bin/kibana-cli --since 1h --namespace myapp --filter-phrase kubernetes.cluster_name=k8s-prod01 --filter-phrase kubernetes.container_name=app --exclude-phrase kubernetes.pod_name=canary --exclude user_agent=kube-probe/1.34 --dump-query | jq -S ."
 run_case "body-passthrough" "fixtures/custom-body.json" \
   bash -c "../bin/kibana-cli --body fixtures/custom-body.json --dump-query"
 run_case "advanced-query" "cases/advanced-query.expected.sorted" \
   bash -c "../bin/kibana-cli --at 2026-04-19T10:30:00Z --until 2026-04-19T11:00:00Z --namespace myapp --service api --gte status=500 --lte duration_ms=5000 --phrase 'duplicate key' --dump-query | jq -S ."
+run_case "query-or-phrases-passthrough" "cases/query-or-phrases.expected" \
+  bash -c "../bin/kibana-cli --since 1h --namespace myapp --query '\"timeout exceeded\" | \"deadline.reached\"' --dump-query | jq -c '.query.bool.must[0].simple_query_string'"
+run_case "query-twice-error" "cases/query-twice.expected" \
+  bash -c "../bin/kibana-cli --query a --query b"
+run_case "phrase-twice-error" "cases/phrase-twice.expected" \
+  bash -c "../bin/kibana-cli --phrase a --phrase b"
 exit $(( FAIL > 0 ? 1 : 0 ))
