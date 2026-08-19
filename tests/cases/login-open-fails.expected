@@ -1,0 +1,4 @@
+kibana-cli-login: could not open https://kibana.example.com in the browser:
+  Error: net::ERR_NAME_NOT_RESOLVED at https://kibana.example.com/
+Check network access to https://kibana.example.com, and that the browser is installed:
+  playwright-cli install-browser

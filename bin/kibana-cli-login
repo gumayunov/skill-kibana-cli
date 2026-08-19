@@ -1,15 +1,159 @@
 #!/usr/bin/env bash
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "kibana-cli-login: bash >= 4 required (found $BASH_VERSION)" >&2
+  exit 1
+fi
 # Obtain/refresh the SSO cookie for KIBANACLI_AUTH=cookie via a real browser.
-# Thin wrapper around scripts/browser-login.mjs; needs node + playwright
-# (one-time: cd <repo root> && npm install && npx playwright install chromium).
+# Drives the globally installed @playwright/cli (playwright-cli). A short
+# headless attempt comes first: where the SSO cookies survive a browser restart
+# it succeeds and no window is shown. Otherwise a window opens for the login —
+# ADFS-style flows land there every time, they re-authenticate only in a real
+# window.
 set -euo pipefail
 
-die() { echo "kibana-cli-login: $*" >&2; exit 1; }
+CLI_NAME="kibana-cli-login"
+MIN_PW_CLI="0.1.18"          # first version with `open --persistent` + `state-save`
+SESSION="kibana-cli"
+PROFILE="$HOME/.config/kibana-cli/chrome-profile"
+SILENT_TIMEOUT=5             # seconds given to a silent (headless) re-auth
+LOGIN_TIMEOUT=300            # seconds given to the interactive SSO flow
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+die() { echo "$CLI_NAME: $*" >&2; exit 1; }
 
-command -v node >/dev/null 2>&1 || die "node is required (>= 18)"
-[[ -d "$root/node_modules/playwright" ]] || \
-  die "playwright not installed — run: cd $root && npm install && npx playwright install chromium"
+print_help() {
+cat <<'EOF'
+kibana-cli-login — obtain/refresh the SSO cookie for KIBANACLI_AUTH=cookie
 
-exec node "$root/scripts/browser-login.mjs" "$@"
+Usage:
+  kibana-cli-login
+  kibana-cli-login --help
+
+Opens KIBANACLI_HOST in a persistent Chrome profile driven by playwright-cli.
+A short headless attempt runs first; if the SSO cookies in the profile still
+work the run stays silent, otherwise a browser window opens for the login.
+Once GET /api/status answers 200 the cookie header is written to the cookie
+file (chmod 600).
+
+Prerequisites (one-time):
+  npm i -g @playwright/cli
+  playwright-cli install-browser
+
+Env file — first match wins: $KIBANACLI_ENV, then .kibana-cli/env upwards
+from cwd (per-project config), then ~/.config/kibana-cli/env:
+  KIBANACLI_HOST (required)
+  KIBANACLI_COOKIE_FILE   where to write the cookie (default: <env dir>/cookie)
+EOF
+}
+
+check_deps() {
+  command -v playwright-cli >/dev/null 2>&1 || die "playwright-cli not found — install it:
+  npm i -g @playwright/cli
+  playwright-cli install-browser"
+  local version
+  version=$(playwright-cli --version 2>/dev/null | head -1 | tr -d '[:space:]')
+  [[ -n "$version" ]] || die "playwright-cli --version produced no output — is the install broken?"
+  if [[ "$(printf '%s\n%s\n' "$MIN_PW_CLI" "$version" | sort -V | head -1)" != "$MIN_PW_CLI" ]]; then
+    die "playwright-cli $version is too old (need >= $MIN_PW_CLI) — update it:
+  npm i -g @playwright/cli@latest
+  playwright-cli install-browser"
+  fi
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+  command -v curl >/dev/null 2>&1 || die "curl is required"
+}
+
+# Mirror of find_env_file in kibana-cli; keep synchronised.
+find_env_file() {
+  if [[ -n "${KIBANACLI_ENV:-}" ]]; then echo "$KIBANACLI_ENV"; return; fi
+  local dir=$PWD
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/.kibana-cli/env" ]]; then echo "$dir/.kibana-cli/env"; return; fi
+    dir=$(dirname "$dir")
+  done
+  echo "$HOME/.config/kibana-cli/env"
+}
+
+# Subset of load_env in kibana-cli: only HOST and the cookie file matter here.
+load_env() {
+  ENV_FILE=$(find_env_file)
+  if [[ -n "${KIBANACLI_ENV:-}" && ! -r "$KIBANACLI_ENV" ]]; then
+    die "env file not readable: $KIBANACLI_ENV"
+  fi
+  [[ -r "$ENV_FILE" ]] && { set -a; . "$ENV_FILE"; set +a; }
+  [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
+  HOST="${KIBANACLI_HOST%/}"
+  HOST_NAME=${HOST#*://}; HOST_NAME=${HOST_NAME%%/*}; HOST_NAME=${HOST_NAME%%:*}
+  COOKIE_FILE="${KIBANACLI_COOKIE_FILE:-$(dirname "$ENV_FILE")/cookie}"
+  [[ "$COOKIE_FILE" == /* ]] || COOKIE_FILE="$PWD/$COOKIE_FILE"
+}
+
+pw() { playwright-cli -s="$SESSION" "$@"; }
+close_session() { playwright-cli -s="$SESSION" close >/dev/null 2>&1 || true; }
+
+open_browser() {
+  # args: extra playwright-cli open flags (e.g. --headed)
+  local out
+  out=$(pw open "$@" --persistent --profile "$PROFILE" "$HOST/" 2>&1) && return 0
+  # `open` reports navigation failures (DNS, VPN down, dead host) in its output.
+  die "could not open $HOST in the browser:
+$(printf '%s\n' "$out" | sed $'s/\033\\[[0-9;]*m//g' | grep -v '^###' | grep -v '^[[:space:]]*$' | head -3 | sed 's/^/  /')
+Check network access to $HOST, and that the browser is installed:
+  playwright-cli install-browser"
+}
+
+# Prints the Cookie header once the session authenticates against Kibana;
+# prints nothing while it does not.
+capture_cookie() {
+  local state="$WORKDIR/state.json" header http_code
+  rm -f "$state"
+  pw state-save "$state" >/dev/null 2>&1 || return 0
+  [[ -s "$state" ]] || return 0
+  header=$(jq -r --arg h "$HOST_NAME" '
+    [ .cookies[]?
+      | select((.domain | ltrimstr(".")) as $d | $h == $d or ($h | endswith("." + $d)))
+      | "\(.name)=\(.value)" ] | join("; ")' "$state" 2>/dev/null) || return 0
+  [[ -n "$header" ]] || return 0
+  http_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -H "Cookie: $header" "$HOST/api/status" 2>/dev/null) || return 0
+  [[ "$http_code" == 200 ]] || return 0
+  printf '%s\n' "$header"
+}
+
+wait_for_cookie() {
+  local deadline=$(( SECONDS + $1 )) header
+  while (( SECONDS < deadline )); do
+    header=$(capture_cookie)
+    if [[ -n "$header" ]]; then printf '%s\n' "$header"; return 0; fi
+    sleep 1
+  done
+  return 1
+}
+
+case "${1:-}" in
+  --help|-h) print_help; exit 0 ;;
+  "") ;;
+  *) die "unknown argument: $1 (see --help)" ;;
+esac
+
+check_deps
+load_env
+
+WORKDIR=$(mktemp -d)   # playwright-cli drops .playwright-cli/ artifacts into cwd
+cleanup() { close_session; rm -rf "$WORKDIR"; }
+trap cleanup EXIT
+close_session          # a session left over from an interrupted run
+cd "$WORKDIR"
+
+cookie=""
+open_browser
+if ! cookie=$(wait_for_cookie "$SILENT_TIMEOUT"); then
+  close_session
+  echo "$CLI_NAME: log in to $HOST in the browser window..." >&2
+  open_browser --headed
+  cookie=$(wait_for_cookie "$LOGIN_TIMEOUT") ||
+    die "no working session after $(( LOGIN_TIMEOUT / 60 )) minutes — run again and complete the login."
+fi
+
+mkdir -p "$(dirname "$COOKIE_FILE")"
+(umask 077; printf '%s\n' "$cookie" > "$COOKIE_FILE")
+chmod 600 "$COOKIE_FILE"
+echo "$CLI_NAME: cookie saved to $COOKIE_FILE" >&2

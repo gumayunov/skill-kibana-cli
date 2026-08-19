@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test stub: pretends to be a supported @playwright/cli. Any command other than
+# --version means the script got further than the preflight/env checks under test.
+[[ "${1:-}" == "--version" ]] && { echo "0.1.18"; exit 0; }
+echo "stub(new): unexpected command: $*" >&2
+exit 1

@@ -57,4 +57,14 @@ run_case "query-twice-error" "cases/query-twice.expected" \
   bash -c "../bin/kibana-cli --query a --query b"
 run_case "phrase-twice-error" "cases/phrase-twice.expected" \
   bash -c "../bin/kibana-cli --phrase a --phrase b"
+# Preflight/env checks of kibana-cli-login — no browser involved: the stubs in
+# stubs/ answer --version and fail loudly on anything else.
+run_case "login-no-cli" "cases/login-no-cli.expected" \
+  env PATH="$(dirname "$(command -v bash)"):/usr/bin:/bin" ../bin/kibana-cli-login
+run_case "login-old-cli" "cases/login-old-cli.expected" \
+  env PATH="$PWD/stubs/old:$PATH" ../bin/kibana-cli-login
+run_case "login-no-host" "cases/login-no-host.expected" \
+  env PATH="$PWD/stubs/new:$PATH" KIBANACLI_ENV=fixtures/empty-env ../bin/kibana-cli-login
+run_case "login-open-fails" "cases/login-open-fails.expected" \
+  env PATH="$PWD/stubs/badopen:$PATH" KIBANACLI_ENV=fixtures/host-env ../bin/kibana-cli-login
 exit $(( FAIL > 0 ? 1 : 0 ))
