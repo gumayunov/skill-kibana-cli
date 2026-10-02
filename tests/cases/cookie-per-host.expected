@@ -1,0 +1,1 @@
+kibana-cli: no cookie: run bin/kibana-cli-login first (/nonexistent/.config/kibana-cli/cookies/kibana.example.com missing)

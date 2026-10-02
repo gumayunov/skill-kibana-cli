@@ -1,0 +1,1 @@
+kibana-cli: cookie moved: it now lives per Kibana host in /nonexistent/.config/kibana-cli/cookies/kibana.example.com instead of next to the env file — run bin/kibana-cli-login, then delete fixtures/legacy-cookie/cookie
