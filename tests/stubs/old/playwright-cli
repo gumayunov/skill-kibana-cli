@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Test stub: pretends to be an outdated @playwright/cli.
+[[ "${1:-}" == "--version" ]] && { echo "0.1.6"; exit 0; }
+echo "stub(old): unexpected command: $*" >&2
+exit 1

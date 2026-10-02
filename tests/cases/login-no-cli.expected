@@ -1,0 +1,3 @@
+kibana-cli-login: playwright-cli not found — install it:
+  npm i -g @playwright/cli
+  playwright-cli install-browser

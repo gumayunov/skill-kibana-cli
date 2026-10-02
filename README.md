@@ -110,10 +110,11 @@ chmod 600 ~/.config/kibana-cli/env
 Если Kibana (или дефолтные фильтры) у каждого проекта своя, env-файл можно
 положить в корень проекта — `.kibana-cli/env`. CLI ищет конфиг в таком
 порядке: `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от текущей
-директории → `~/.config/kibana-cli/env`. Файл cookie (для SSO-режима) по
-умолчанию живёт рядом с env-файлом — у каждого проекта своя cookie.
-`.kibana-cli/cookie` в git попадать не должен — добавьте в `.gitignore`
-проекта (или положите `.kibana-cli/.gitignore` с строкой `cookie`).
+директории → `~/.config/kibana-cli/env`. В проекте лежит только конфиг —
+одинаковый для всей команды, его можно коммитить. Личное состояние в проект не
+попадает: cookie SSO-режима хранится в `~/.config/kibana-cli/cookies/<хост>`,
+одна на хост Kibana — общая для всех проектов и worktree, которые на него
+смотрят.
 
 Режим аутентификации задаётся в env-файле параметром `KIBANACLI_AUTH`:
 `apikey` (дефолт, нужен `KIBANACLI_API_KEY`) или `cookie` (SSO; см. следующий
@@ -134,19 +135,25 @@ chmod 600 ~/.config/kibana-cli/env
 Если Kibana спрятана за SSO-прокси (oauth2-proxy / ADFS / SAML) и API-ключ
 сделать нельзя (нет admin-доступа, а заголовок `Authorization` до Kibana не
 доходит — прокси требует свою cookie), CLI умеет cookie-режим:
-`KIBANACLI_AUTH=cookie` в env-файле. Файл cookie CLI берёт рядом с env-файлом
+`KIBANACLI_AUTH=cookie` в env-файле. Cookie CLI берёт из
+`~/.config/kibana-cli/cookies/<хост>` — по хосту из `KIBANACLI_HOST`
 (переопределяется `KIBANACLI_COOKIE_FILE`).
 
 Как это работает:
 
-- `bin/kibana-cli-login` открывает настоящее окно Chromium (Playwright) на
-  `KIBANACLI_HOST`; вы проходите SSO как обычно. Как только `GET /api/status`
-  с cookie из браузера возвращает 200, cookie сохраняется рядом с env-файлом
-  (chmod 600) и окно закрывается.
-- Профиль браузера персистентный (`~/.config/kibana-cli/browser-profile`,
-  общий на все проекты), поэтому повторный `kibana-cli-login` обычно проходит
-  молча — окно мелькает и закрывается без вопросов. Протухла cookie (CLI
-  скажет `cookie expired or invalid`) — просто перезапустите login.
+- `bin/kibana-cli-login` открывает `KIBANACLI_HOST` в персистентном профиле
+  Chrome, которым рулит `playwright-cli`. Сначала короткая (5 с) headless-
+  попытка: если SSO-куки в профиле пережили перезапуск браузера, прогон
+  проходит молча, окна нет вообще. Не сработало — открывается окно, вы
+  проходите SSO как обычно. Как только `GET /api/status` с cookie из браузера
+  возвращает 200, cookie сохраняется в `~/.config/kibana-cli/cookies/<хост>`
+  (chmod 600), браузер закрывается.
+- Насколько часто нужен ручной вход — зависит от SSO. Стенды за oauth2-proxy
+  с персистентной cookie переживают перезапуск и логинятся молча. ADFS
+  (например, `kibana.sbmt.io`) — нет: его сессионные куки в профиле не
+  сохраняются, поэтому окно и вход в него нужны при каждом запуске login.
+  Протухла cookie (CLI скажет `cookie expired or invalid`) — перезапустите
+  login.
 - Поиск в этом режиме идёт не через console proxy, а через внутренний API
   Kibana `/internal/search/ese` (тот же, которым пользуется Discover): у
   SSO-пользователей обычно нет Kibana-привилегии `console`, а для этого
@@ -156,7 +163,7 @@ chmod 600 ~/.config/kibana-cli/env
 Setup (пример с per-project конфигом):
 
 ```bash
-npm install && npx playwright install chromium   # one-time, в корне этого репо
+npm i -g @playwright/cli && playwright-cli install-browser   # one-time, глобально
 
 # в корне проекта, логи которого смотрим:
 mkdir -p .kibana-cli
@@ -164,12 +171,15 @@ cat > .kibana-cli/env <<'EOF'
 KIBANACLI_HOST=https://kibana.example.com
 KIBANACLI_AUTH=cookie
 EOF
-echo 'cookie' > .kibana-cli/.gitignore
 
-kibana-cli-login          # откроется браузер, после SSO появится .kibana-cli/cookie
+kibana-cli-login          # откроется браузер для SSO → ~/.config/kibana-cli/cookies/kibana.example.com
 kibana-cli --list-indices | head
 kibana-cli --index 'my-app-*' --since 10m --limit 3
 ```
+
+Раньше cookie лежала рядом с env-файлом (`.kibana-cli/cookie` в проекте). Если
+такой файл остался, CLI попросит один раз перезапустить `kibana-cli-login`,
+а login напомнит удалить старый файл.
 
 Ограничения cookie-режима: живёт столько, сколько SSO-сессия (обычно
 часы–сутки), machine-to-machine сценарии без периодического браузерного
@@ -228,8 +238,12 @@ Elasticsearch. Все тесты должны проходить.
   bash 3.2 не подойдёт: `brew install bash`.
 - **curl** — обычно уже есть.
 - **jq ≥ 1.6** — `brew install jq` / `apt install jq`.
-- **node ≥ 18 + playwright** — только для `kibana-cli-login` (SSO-cookie
-  режим); apikey-режиму не нужны.
+- **`@playwright/cli`** — только для `kibana-cli-login` (SSO-cookie режим);
+  apikey-режиму не нужен. Ставится глобально, один раз:
+  `npm i -g @playwright/cli && playwright-cli install-browser`. Нужна версия
+  ≥ 0.1.18 — login проверяет её сам. Учтите, что глобальные npm-пакеты живут
+  внутри конкретной версии node: после переключения node (nvm/mise/asdf)
+  установку надо повторить.
 
 ## Агентская часть
 

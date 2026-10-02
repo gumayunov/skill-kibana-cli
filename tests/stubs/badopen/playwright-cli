@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Test stub: a supported playwright-cli whose `open` fails the way an unreachable
+# host does (no DNS / VPN down) — the error text lives in its output, exit is 1.
+[[ "${1:-}" == "--version" ]] && { echo "0.1.18"; exit 0; }
+case "${2:-}" in
+  close) exit 0 ;;
+  open)
+    echo "### Browser \`kibana-cli\` opened with pid 12345."
+    echo "### Error"
+    echo "Error: net::ERR_NAME_NOT_RESOLVED at https://kibana.example.com/"
+    exit 1
+    ;;
+esac
+echo "stub(badopen): unexpected command: $*" >&2
+exit 1
