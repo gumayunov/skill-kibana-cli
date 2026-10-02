@@ -1,0 +1,2 @@
+KIBANACLI_HOST=https://kibana.example.com:5601/
+KIBANACLI_AUTH=cookie

@@ -41,7 +41,8 @@ Prerequisites (one-time):
 Env file — first match wins: $KIBANACLI_ENV, then .kibana-cli/env upwards
 from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)
-  KIBANACLI_COOKIE_FILE   where to write the cookie (default: <env dir>/cookie)
+  KIBANACLI_COOKIE_FILE   where to write the cookie
+                          (default: ~/.config/kibana-cli/cookies/<host>)
 EOF
 }
 
@@ -59,6 +60,14 @@ check_deps() {
   fi
   command -v jq >/dev/null 2>&1 || die "jq is required"
   command -v curl >/dev/null 2>&1 || die "curl is required"
+}
+
+# Mirror of cookie_file_for_host in kibana-cli and kibana-cli-get; keep synchronised.
+# The SSO cookie belongs to the Kibana host, not to the project: one login serves every
+# project and worktree that points at the same host.
+cookie_file_for_host() {
+  local name=${1#*://}; name=${name%%/*}; name=${name%%:*}
+  echo "$HOME/.config/kibana-cli/cookies/$name"
 }
 
 # Mirror of find_env_file in kibana-cli; keep synchronised.
@@ -82,7 +91,8 @@ load_env() {
   [[ -n "${KIBANACLI_HOST:-}" ]] || die "no config: set KIBANACLI_HOST in $ENV_FILE (see README)"
   HOST="${KIBANACLI_HOST%/}"
   HOST_NAME=${HOST#*://}; HOST_NAME=${HOST_NAME%%/*}; HOST_NAME=${HOST_NAME%%:*}
-  COOKIE_FILE="${KIBANACLI_COOKIE_FILE:-$(dirname "$ENV_FILE")/cookie}"
+  COOKIE_FILE="${KIBANACLI_COOKIE_FILE:-$(cookie_file_for_host "$HOST")}"
+  LEGACY_COOKIE_FILE="$(dirname "$ENV_FILE")/cookie"
   [[ "$COOKIE_FILE" == /* ]] || COOKIE_FILE="$PWD/$COOKIE_FILE"
 }
 
@@ -153,7 +163,9 @@ if ! cookie=$(wait_for_cookie "$SILENT_TIMEOUT"); then
     die "no working session after $(( LOGIN_TIMEOUT / 60 )) minutes — run again and complete the login."
 fi
 
-mkdir -p "$(dirname "$COOKIE_FILE")"
-(umask 077; printf '%s\n' "$cookie" > "$COOKIE_FILE")
+(umask 077; mkdir -p "$(dirname "$COOKIE_FILE")"; printf '%s\n' "$cookie" > "$COOKIE_FILE")
 chmod 600 "$COOKIE_FILE"
 echo "$CLI_NAME: cookie saved to $COOKIE_FILE" >&2
+if [[ -z "${KIBANACLI_COOKIE_FILE:-}" && -e "$LEGACY_COOKIE_FILE" ]]; then
+  echo "$CLI_NAME: $LEGACY_COOKIE_FILE is no longer used — delete it" >&2
+fi

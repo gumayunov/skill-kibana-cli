@@ -110,10 +110,11 @@ chmod 600 ~/.config/kibana-cli/env
 Если Kibana (или дефолтные фильтры) у каждого проекта своя, env-файл можно
 положить в корень проекта — `.kibana-cli/env`. CLI ищет конфиг в таком
 порядке: `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от текущей
-директории → `~/.config/kibana-cli/env`. Файл cookie (для SSO-режима) по
-умолчанию живёт рядом с env-файлом — у каждого проекта своя cookie.
-`.kibana-cli/cookie` в git попадать не должен — добавьте в `.gitignore`
-проекта (или положите `.kibana-cli/.gitignore` с строкой `cookie`).
+директории → `~/.config/kibana-cli/env`. В проекте лежит только конфиг —
+одинаковый для всей команды, его можно коммитить. Личное состояние в проект не
+попадает: cookie SSO-режима хранится в `~/.config/kibana-cli/cookies/<хост>`,
+одна на хост Kibana — общая для всех проектов и worktree, которые на него
+смотрят.
 
 Режим аутентификации задаётся в env-файле параметром `KIBANACLI_AUTH`:
 `apikey` (дефолт, нужен `KIBANACLI_API_KEY`) или `cookie` (SSO; см. следующий
@@ -134,7 +135,8 @@ chmod 600 ~/.config/kibana-cli/env
 Если Kibana спрятана за SSO-прокси (oauth2-proxy / ADFS / SAML) и API-ключ
 сделать нельзя (нет admin-доступа, а заголовок `Authorization` до Kibana не
 доходит — прокси требует свою cookie), CLI умеет cookie-режим:
-`KIBANACLI_AUTH=cookie` в env-файле. Файл cookie CLI берёт рядом с env-файлом
+`KIBANACLI_AUTH=cookie` в env-файле. Cookie CLI берёт из
+`~/.config/kibana-cli/cookies/<хост>` — по хосту из `KIBANACLI_HOST`
 (переопределяется `KIBANACLI_COOKIE_FILE`).
 
 Как это работает:
@@ -144,8 +146,8 @@ chmod 600 ~/.config/kibana-cli/env
   попытка: если SSO-куки в профиле пережили перезапуск браузера, прогон
   проходит молча, окна нет вообще. Не сработало — открывается окно, вы
   проходите SSO как обычно. Как только `GET /api/status` с cookie из браузера
-  возвращает 200, cookie сохраняется рядом с env-файлом (chmod 600), браузер
-  закрывается.
+  возвращает 200, cookie сохраняется в `~/.config/kibana-cli/cookies/<хост>`
+  (chmod 600), браузер закрывается.
 - Насколько часто нужен ручной вход — зависит от SSO. Стенды за oauth2-proxy
   с персистентной cookie переживают перезапуск и логинятся молча. ADFS
   (например, `kibana.sbmt.io`) — нет: его сессионные куки в профиле не
@@ -169,12 +171,15 @@ cat > .kibana-cli/env <<'EOF'
 KIBANACLI_HOST=https://kibana.example.com
 KIBANACLI_AUTH=cookie
 EOF
-echo 'cookie' > .kibana-cli/.gitignore
 
-kibana-cli-login          # откроется браузер для SSO → появится .kibana-cli/cookie
+kibana-cli-login          # откроется браузер для SSO → ~/.config/kibana-cli/cookies/kibana.example.com
 kibana-cli --list-indices | head
 kibana-cli --index 'my-app-*' --since 10m --limit 3
 ```
+
+Раньше cookie лежала рядом с env-файлом (`.kibana-cli/cookie` в проекте). Если
+такой файл остался, CLI попросит один раз перезапустить `kibana-cli-login`,
+а login напомнит удалить старый файл.
 
 Ограничения cookie-режима: живёт столько, сколько SSO-сессия (обычно
 часы–сутки), machine-to-machine сценарии без периодического браузерного

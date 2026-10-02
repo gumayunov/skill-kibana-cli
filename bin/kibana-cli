@@ -48,7 +48,8 @@ from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)     e.g. https://logs.example.com
   KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
   KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
-  KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
+  KIBANACLI_COOKIE_FILE         cookie file for cookie auth
+                                (default: ~/.config/kibana-cli/cookies/<host>)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
   KIBANACLI_MESSAGE_FIELDS      fields searched by --query/--phrase and used as
                                 the line body in short/full output, first
@@ -60,6 +61,14 @@ EOF
 }
 
 die() { echo "$CLI_NAME: $*" >&2; exit 1; }
+
+# Mirror of cookie_file_for_host in kibana-cli-get and kibana-cli-login; keep synchronised.
+# The SSO cookie belongs to the Kibana host, not to the project: one login serves every
+# project and worktree that points at the same host.
+cookie_file_for_host() {
+  local name=${1#*://}; name=${name%%/*}; name=${name%%:*}
+  echo "$HOME/.config/kibana-cli/cookies/$name"
+}
 
 # Mirror of find_env_file/load_env in kibana-cli-get; keep synchronised.
 find_env_file() {
@@ -85,8 +94,14 @@ load_env() {
       [[ -n "${KIBANACLI_API_KEY:-}" ]] || die "no config: set KIBANACLI_API_KEY in $ENV_FILE (see README)"
       ;;
     cookie)
-      local cookie_file="${KIBANACLI_COOKIE_FILE:-$(dirname "$ENV_FILE")/cookie}"
-      [[ -r "$cookie_file" ]] || die "no cookie: run bin/kibana-cli-login first ($cookie_file missing)"
+      local cookie_file="${KIBANACLI_COOKIE_FILE:-$(cookie_file_for_host "$KIBANACLI_HOST")}"
+      if [[ ! -r "$cookie_file" ]]; then
+        # Before the cookie moved to the per-host location it lived next to the env file.
+        local legacy; legacy="$(dirname "$ENV_FILE")/cookie"
+        [[ -z "${KIBANACLI_COOKIE_FILE:-}" && -e "$legacy" ]] &&
+          die "cookie moved: it now lives per Kibana host in $cookie_file instead of next to the env file — run bin/kibana-cli-login, then delete $legacy"
+        die "no cookie: run bin/kibana-cli-login first ($cookie_file missing)"
+      fi
       KIBANACLI_COOKIE=$(<"$cookie_file")
       ;;
     *) die "invalid KIBANACLI_AUTH: $AUTH_MODE (expected apikey or cookie)" ;;

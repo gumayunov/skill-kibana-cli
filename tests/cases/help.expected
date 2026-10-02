@@ -37,7 +37,8 @@ from cwd (per-project config), then ~/.config/kibana-cli/env:
   KIBANACLI_HOST (required)     e.g. https://logs.example.com
   KIBANACLI_AUTH                apikey (default) or cookie (SSO via kibana-cli-login)
   KIBANACLI_API_KEY             base64(id:api_key); required for apikey auth
-  KIBANACLI_COOKIE_FILE         cookie file for cookie auth (default: <env dir>/cookie)
+  KIBANACLI_COOKIE_FILE         cookie file for cookie auth
+                                (default: ~/.config/kibana-cli/cookies/<host>)
   KIBANACLI_DEFAULT_NAMESPACE   default --namespace value
   KIBANACLI_MESSAGE_FIELDS      fields searched by --query/--phrase and used as
                                 the line body in short/full output, first

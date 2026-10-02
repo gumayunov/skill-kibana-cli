@@ -17,7 +17,7 @@ description: Use when нужно посмотреть логи кластера 
 
 Если файла нет или CLI падает с `no config: set KIBANACLI_HOST …` — см. `README.md` рядом с этим файлом (инструкция по созданию API-ключа и заполнению env).
 
-Конфиг может быть и проектным: CLI ищет env-файл в порядке `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от cwd → `~/.config/kibana-cli/env`. Режим аутентификации задаётся в env-файле: `KIBANACLI_AUTH=apikey` (дефолт) или `KIBANACLI_AUTH=cookie` (SSO; cookie лежит рядом с env-файлом). Если CLI падает с `cookie expired or invalid — re-run bin/kibana-cli-login` — попроси пользователя выполнить `bin/kibana-cli-login` (обычно откроется окно браузера для SSO; на стендах с персистентной cookie проходит молча) и повтори команду.
+Конфиг может быть и проектным: CLI ищет env-файл в порядке `$KIBANACLI_ENV` → `.kibana-cli/env` вверх по дереву от cwd → `~/.config/kibana-cli/env`. Режим аутентификации задаётся в env-файле: `KIBANACLI_AUTH=apikey` (дефолт) или `KIBANACLI_AUTH=cookie` (SSO; cookie лежит в `~/.config/kibana-cli/cookies/<хост>`, одна на хост Kibana для всех проектов). Если CLI падает с `cookie expired or invalid — re-run bin/kibana-cli-login` или `cookie moved: …` — попроси пользователя выполнить `bin/kibana-cli-login` (обычно откроется окно браузера для SSO; на стендах с персистентной cookie проходит молча) и повтори команду.
 
 ## Команды
 

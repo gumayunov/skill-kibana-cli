@@ -57,6 +57,16 @@ run_case "query-twice-error" "cases/query-twice.expected" \
   bash -c "../bin/kibana-cli --query a --query b"
 run_case "phrase-twice-error" "cases/phrase-twice.expected" \
   bash -c "../bin/kibana-cli --phrase a --phrase b"
+# Cookie location: per Kibana host under ~/.config/kibana-cli/cookies, not next to
+# the env file. load_env dies before any network call when the cookie is missing.
+run_case "cookie-per-host" "cases/cookie-per-host.expected" \
+  env HOME=/nonexistent KIBANACLI_ENV=fixtures/cookie-env ../bin/kibana-cli --since 1h
+run_case "get-cookie-per-host" "cases/get-cookie-per-host.expected" \
+  env HOME=/nonexistent KIBANACLI_ENV=fixtures/cookie-env ../bin/kibana-cli-get idx/doc
+run_case "cookie-legacy-hint" "cases/cookie-legacy-hint.expected" \
+  env HOME=/nonexistent KIBANACLI_ENV=fixtures/legacy-cookie/env ../bin/kibana-cli --since 1h
+run_case "cookie-explicit-file" "cases/cookie-explicit-file.expected" \
+  env HOME=/nonexistent KIBANACLI_ENV=fixtures/legacy-cookie/env KIBANACLI_COOKIE_FILE=/nonexistent/explicit-cookie ../bin/kibana-cli --since 1h
 # Preflight/env checks of kibana-cli-login — no browser involved: the stubs in
 # stubs/ answer --version and fail loudly on anything else.
 run_case "login-no-cli" "cases/login-no-cli.expected" \
